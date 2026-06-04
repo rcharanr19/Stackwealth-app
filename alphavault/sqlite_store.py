@@ -349,25 +349,38 @@ class SQLiteStore:
         tracked_payload = json.dumps(normalized_tracked, separators=(",", ":"))
         baseline_payload = json.dumps(normalized_baseline, separators=(",", ":"))
         initialized_flag = 1 if initialized else 0
+        columns = self._table_columns("sync_profile")
+        insert_columns = ["id", "baseline_date", "tracked_tickers", "updated_at"]
+        insert_values: list[Any] = [1, baseline_date, tracked_payload, now]
+
+        if "baseline_value_usd" in columns:
+            insert_columns.insert(2, "baseline_value_usd")
+            insert_values.insert(2, None)
+        if "baseline_assets" in columns:
+            insert_columns.insert(3 if "baseline_value_usd" in columns else 2, "baseline_assets")
+            insert_values.insert(3 if "baseline_value_usd" in columns else 2, baseline_payload)
+        if "initialized" in columns:
+            insert_columns.insert(len(insert_columns) - 1, "initialized")
+            insert_values.insert(len(insert_values) - 1, initialized_flag)
+        if "initialized_at" in columns:
+            insert_columns.insert(len(insert_columns) - 1, "initialized_at")
+            insert_values.insert(len(insert_values) - 1, None)
+        if "last_sync_at" in columns:
+            insert_columns.insert(len(insert_columns) - 1, "last_sync_at")
+            insert_values.insert(len(insert_values) - 1, None)
+        if "sync_version" in columns:
+            insert_columns.insert(len(insert_columns) - 1, "sync_version")
+            insert_values.insert(len(insert_values) - 1, 1)
+        if "initial_sync_completed" in columns:
+            insert_columns.insert(len(insert_columns) - 1, "initial_sync_completed")
+            insert_values.insert(len(insert_values) - 1, initialized_flag)
+
+        placeholders = ", ".join(["?"] * len(insert_columns))
+        column_sql = ", ".join(insert_columns)
         with self._connect() as conn:
             conn.execute(
-                """
-                INSERT OR IGNORE INTO sync_profile (
-                    id,
-                    baseline_date,
-                    baseline_value_usd,
-                    baseline_assets,
-                    initialized,
-                    initialized_at,
-                    last_sync_at,
-                    sync_version,
-                    initial_sync_completed,
-                    tracked_tickers,
-                    updated_at
-                )
-                VALUES (1, ?, NULL, ?, ?, NULL, NULL, 1, ?, ?, ?)
-                """,
-                (baseline_date, baseline_payload, initialized_flag, initialized_flag, tracked_payload, now),
+                f"INSERT OR IGNORE INTO sync_profile ({column_sql}) VALUES ({placeholders})",
+                insert_values,
             )
 
     def bootstrap_sync_profile_from_portfolio_json(self, json_path: Path) -> dict[str, Any]:
