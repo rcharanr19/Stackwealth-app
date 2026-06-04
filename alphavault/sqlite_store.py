@@ -39,6 +39,12 @@ class SQLiteStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _prepare_sync_profile(self) -> set[str]:
+        with self._connect() as conn:
+            self._ensure_sync_profile_schema(conn)
+            rows = conn.execute("PRAGMA table_info(sync_profile)").fetchall()
+        return {str(row["name"]) for row in rows}
+
     def _table_columns(self, table_name: str) -> set[str]:
         with self._connect() as conn:
             rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
@@ -341,7 +347,7 @@ class SQLiteStore:
         tracked_payload = json.dumps(normalized_tracked, separators=(",", ":"))
         baseline_payload = json.dumps(normalized_baseline, separators=(",", ":"))
         initialized_flag = 1 if initialized else 0
-        columns = self._table_columns("sync_profile")
+        columns = self._prepare_sync_profile()
         insert_columns = ["id", "baseline_date", "tracked_tickers", "updated_at"]
         insert_values: list[Any] = [1, baseline_date, tracked_payload, now]
 
@@ -392,10 +398,7 @@ class SQLiteStore:
         return profile
 
     def get_sync_profile(self) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            self._ensure_sync_profile_schema(conn)
-
-        columns = self._table_columns("sync_profile")
+        columns = self._prepare_sync_profile()
         if not columns:
             return None
 
@@ -461,6 +464,7 @@ class SQLiteStore:
     def set_baseline_value_usd(self, value: float) -> None:
         now = datetime.utcnow().isoformat()
         with self._connect() as conn:
+            self._ensure_sync_profile_schema(conn)
             conn.execute(
                 """
                 UPDATE sync_profile
@@ -486,6 +490,7 @@ class SQLiteStore:
         payload = json.dumps(merged, separators=(",", ":"))
 
         with self._connect() as conn:
+            self._ensure_sync_profile_schema(conn)
             conn.execute(
                 """
                 UPDATE sync_profile
@@ -500,6 +505,7 @@ class SQLiteStore:
         payload = json.dumps(normalized, separators=(",", ":"))
         now = datetime.utcnow().isoformat()
         with self._connect() as conn:
+            self._ensure_sync_profile_schema(conn)
             conn.execute(
                 """
                 UPDATE sync_profile
@@ -512,6 +518,7 @@ class SQLiteStore:
     def mark_sync_initialized(self) -> None:
         now = datetime.utcnow().isoformat()
         with self._connect() as conn:
+            self._ensure_sync_profile_schema(conn)
             conn.execute(
                 """
                 UPDATE sync_profile
@@ -529,6 +536,7 @@ class SQLiteStore:
     def touch_last_sync(self) -> None:
         now = datetime.utcnow().isoformat()
         with self._connect() as conn:
+            self._ensure_sync_profile_schema(conn)
             conn.execute(
                 """
                 UPDATE sync_profile
