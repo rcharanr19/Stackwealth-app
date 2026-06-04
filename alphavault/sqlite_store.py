@@ -18,6 +18,22 @@ class SQLiteStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
+    def _ensure_sync_profile_schema(self, conn: sqlite3.Connection) -> None:
+        # Keep existing databases compatible with newer sync_profile fields.
+        migration_statements = [
+            "ALTER TABLE sync_profile ADD COLUMN initial_sync_completed INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE sync_profile ADD COLUMN baseline_assets TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE sync_profile ADD COLUMN initialized INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE sync_profile ADD COLUMN initialized_at TEXT",
+            "ALTER TABLE sync_profile ADD COLUMN last_sync_at TEXT",
+            "ALTER TABLE sync_profile ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1",
+        ]
+        for statement in migration_statements:
+            try:
+                conn.execute(statement)
+            except sqlite3.OperationalError:
+                pass
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
@@ -77,31 +93,7 @@ class SQLiteStore:
                 )
                 """
             )
-            # Backward-compatible migration for existing databases.
-            try:
-                conn.execute("ALTER TABLE sync_profile ADD COLUMN initial_sync_completed INTEGER NOT NULL DEFAULT 0")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE sync_profile ADD COLUMN baseline_assets TEXT NOT NULL DEFAULT '[]'")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE sync_profile ADD COLUMN initialized INTEGER NOT NULL DEFAULT 0")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE sync_profile ADD COLUMN initialized_at TEXT")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE sync_profile ADD COLUMN last_sync_at TEXT")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE sync_profile ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1")
-            except sqlite3.OperationalError:
-                pass
+            self._ensure_sync_profile_schema(conn)
 
     @staticmethod
     def _normalize_tickers(tickers: list[str] | set[str]) -> list[str]:
@@ -400,6 +392,9 @@ class SQLiteStore:
         return profile
 
     def get_sync_profile(self) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            self._ensure_sync_profile_schema(conn)
+
         columns = self._table_columns("sync_profile")
         if not columns:
             return None
