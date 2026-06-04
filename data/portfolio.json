@@ -1,0 +1,476 @@
+{
+  "positions": [
+    {
+      "ticker": "AMZN",
+      "company_name": "Amazon.com Inc",
+      "shares": 305,
+      "avg_price": 187.18,
+      "currency": "USD"
+    },
+    {
+      "ticker": "META",
+      "company_name": "Meta Platforms Inc",
+      "shares": 130,
+      "avg_price": 641.57,
+      "currency": "USD"
+    },
+    {
+      "ticker": "GOOGL",
+      "company_name": "Alphabet Inc Class A",
+      "shares": 200,
+      "avg_price": 310.0,
+      "currency": "USD"
+    },
+    {
+      "ticker": "MELI",
+      "company_name": "MercadoLibre Inc",
+      "shares": 27,
+      "avg_price": 2118.07,
+      "currency": "USD"
+    },
+    {
+      "ticker": "BN",
+      "company_name": "Brookfield Corp",
+      "shares": 1050,
+      "avg_price": 38.13,
+      "currency": "USD"
+    },
+    {
+      "ticker": "MEQ.TO",
+      "company_name": "Mainstreet Equity Corp",
+      "shares": 200,
+      "avg_price": 182.0,
+      "currency": "CAD"
+    },
+    {
+      "ticker": "ADBE",
+      "company_name": "Adobe Inc",
+      "shares": 115,
+      "avg_price": 241.75,
+      "currency": "USD"
+    },
+    {
+      "ticker": "MA",
+      "company_name": "Mastercard Inc",
+      "shares": 60,
+      "avg_price": 462.96,
+      "currency": "USD"
+    },
+    {
+      "ticker": "VIT-B.ST",
+      "company_name": "Vitec Software Group AB (publ)",
+      "shares": 528,
+      "avg_price": 407.6,
+      "currency": "SEK"
+    },
+    {
+      "ticker": "NOW",
+      "company_name": "ServiceNow Inc",
+      "shares": 220,
+      "avg_price": 101.02,
+      "currency": "USD"
+    },
+    {
+      "ticker": "VEEV",
+      "company_name": "Veeva Systems Inc",
+      "shares": 100,
+      "avg_price": 180.0,
+      "currency": "USD"
+    },
+    {
+      "ticker": "CSU.TO",
+      "company_name": "Constellation Software Inc.",
+      "shares": 10,
+      "avg_price": 2498.08,
+      "currency": "CAD"
+    },
+    {
+      "ticker": "TEA.AX",
+      "company_name": "Tasmea Ltd",
+      "shares": 3000,
+      "avg_price": 4.21,
+      "currency": "AUD"
+    },
+    {
+      "ticker": "NICE",
+      "company_name": "Nice Ltd",
+      "shares": 120,
+      "avg_price": 155.59,
+      "currency": "USD"
+    },
+    {
+      "ticker": "GTLB",
+      "company_name": "Gitlab Inc",
+      "shares": 500,
+      "avg_price": 45.72,
+      "currency": "USD"
+    },
+    {
+      "ticker": "PANW",
+      "company_name": "Palo Alto Networks Inc",
+      "shares": 100,
+      "avg_price": 173.98,
+      "currency": "USD"
+    },
+    {
+      "ticker": "TTD",
+      "company_name": "Trade Desk Inc",
+      "shares": 100,
+      "avg_price": 54.24,
+      "currency": "USD"
+    },
+    {
+      "ticker": "HIMS",
+      "company_name": "Hims & Hers Health Inc",
+      "shares": 200,
+      "avg_price": 46.21,
+      "currency": "USD"
+    },
+    {
+      "ticker": "EHMEF",
+      "company_name": "goeasy Ltd",
+      "shares": 100,
+      "avg_price": 108.75,
+      "currency": "USD"
+    },
+    {
+      "ticker": "NTLA",
+      "company_name": "Intellia Therapeutics Inc",
+      "shares": 100,
+      "avg_price": 31.15,
+      "currency": "USD"
+    }
+  ],
+  "transactions": [
+    {
+      "ticker": "PANW",
+      "date": "2026-04-23",
+      "amount": -8674.5
+    },
+    {
+      "ticker": "ADBE",
+      "date": "2026-04-23",
+      "amount": -3517.65
+    },
+    {
+      "ticker": "MA",
+      "date": "2026-04-08",
+      "amount": -10214.6
+    },
+    {
+      "ticker": "VEEV",
+      "date": "2026-04-09",
+      "amount": -18000.0
+    },
+    {
+      "ticker": "NOW",
+      "date": "2026-04-23",
+      "amount": -858.5
+    },
+    {
+      "ticker": "META",
+      "date": "2026-04-30",
+      "amount": -9076.65
+    },
+    {
+      "ticker": "META",
+      "date": "2026-04-29",
+      "amount": -6273.8
+    },
+    {
+      "ticker": "NOW",
+      "date": "2026-04-22",
+      "amount": -8944.0
+    },
+    {
+      "ticker": "NOW",
+      "date": "2026-03-03",
+      "amount": -1072.3
+    },
+    {
+      "ticker": "NOW",
+      "date": "2026-03-13",
+      "amount": -11362.0
+    },
+    {
+      "ticker": "MA",
+      "date": "2026-04-08",
+      "amount": -10214.6
+    },
+    {
+      "ticker": "ADBE",
+      "date": "2026-04-06",
+      "amount": -24284.0
+    },
+    {
+      "ticker": "MA",
+      "date": "2026-02-23",
+      "amount": -9855.2
+    },
+    {
+      "ticker": "MA",
+      "date": "2023-07-06",
+      "amount": -3899.3
+    },
+    {
+      "ticker": "MA",
+      "date": "2023-06-28",
+      "amount": -3796.6
+    },
+    {
+      "ticker": "BN",
+      "date": "2026-02-23",
+      "amount": -10977.5
+    },
+    {
+      "ticker": "BN",
+      "date": "2026-02-03",
+      "amount": -2237.5
+    },
+    {
+      "ticker": "BN",
+      "date": "2025-08-04",
+      "amount": -1396.4
+    },
+    {
+      "ticker": "BN",
+      "date": "2025-07-11",
+      "amount": -3155.25
+    },
+    {
+      "ticker": "BN",
+      "date": "2025-06-09",
+      "amount": -2895.75
+    },
+    {
+      "ticker": "BN",
+      "date": "2025-05-06",
+      "amount": -3266.1
+    },
+    {
+      "ticker": "BN",
+      "date": "2025-04-03",
+      "amount": -4999.67
+    },
+    {
+      "ticker": "BN",
+      "date": "2025-03-26",
+      "amount": -2700.0
+    },
+    {
+      "ticker": "BN",
+      "date": "2025-03-25",
+      "amount": -5760.0
+    },
+    {
+      "ticker": "BN",
+      "date": "2025-03-21",
+      "amount": -2668.5
+    },
+    {
+      "ticker": "ADBE",
+      "date": "2026-03-01",
+      "amount": -24875.0
+    },
+    {
+      "ticker": "MELI",
+      "date": "2026-02-25",
+      "amount": -3474.12
+    },
+    {
+      "ticker": "MELI",
+      "date": "2026-02-23",
+      "amount": -3749.14
+    },
+    {
+      "ticker": "MELI",
+      "date": "2026-02-23",
+      "amount": -9372.7
+    },
+    {
+      "ticker": "MELI",
+      "date": "2026-02-06",
+      "amount": -3877.9
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-12-17",
+      "amount": -1929.06
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-12-15",
+      "amount": -1998.65
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-11-22",
+      "amount": -1974.53
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-10-03",
+      "amount": -2178.12
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-08-04",
+      "amount": -4507.98
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-07-24",
+      "amount": -2396.84
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-07-11",
+      "amount": -999.99
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-07-10",
+      "amount": -1918.38
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-07-10",
+      "amount": -2396.0
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-07-09",
+      "amount": -499.99
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-07-08",
+      "amount": -2451.19
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-06-06",
+      "amount": -2472.98
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-06-05",
+      "amount": -5159.48
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-05-30",
+      "amount": -2545.0
+    },
+    {
+      "ticker": "MELI",
+      "date": "2025-01-07",
+      "amount": -1774.77
+    },
+    {
+      "ticker": "META",
+      "date": "2026-02-23",
+      "amount": -13442.52
+    },
+    {
+      "ticker": "META",
+      "date": "2026-02-23",
+      "amount": -2560.24
+    },
+    {
+      "ticker": "META",
+      "date": "2026-02-19",
+      "amount": -12891.0
+    },
+    {
+      "ticker": "META",
+      "date": "2026-02-12",
+      "amount": -3278.3
+    },
+    {
+      "ticker": "META",
+      "date": "2026-02-12",
+      "amount": -4683.14
+    },
+    {
+      "ticker": "META",
+      "date": "2025-02-06",
+      "amount": -6513.3
+    },
+    {
+      "ticker": "META",
+      "date": "2026-02-05",
+      "amount": -5239.84
+    },
+    {
+      "ticker": "META",
+      "date": "2026-02-04",
+      "amount": -6710.0
+    },
+    {
+      "ticker": "META",
+      "date": "2026-02-03",
+      "amount": -3461.1
+    },
+    {
+      "ticker": "META",
+      "date": "2025-11-22",
+      "amount": -5985.4
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2024-02-15",
+      "amount": -10126.2
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2024-07-17",
+      "amount": -9324.0
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2024-08-05",
+      "amount": -3210.6
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2024-08-06",
+      "amount": -3226.0
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2025-03-31",
+      "amount": -5000.0
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2025-04-03",
+      "amount": -10000.07
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2025-06-25",
+      "amount": 6811.2
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2026-02-03",
+      "amount": -2387.1
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2026-02-05",
+      "amount": -5143.75
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2026-02-12",
+      "amount": -3992.0
+    },
+    {
+      "ticker": "AMZN",
+      "date": "2026-02-23",
+      "amount": -10210.0
+    }
+  ]
+}
