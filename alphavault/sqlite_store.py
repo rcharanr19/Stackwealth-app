@@ -23,6 +23,11 @@ class SQLiteStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _table_columns(self, table_name: str) -> set[str]:
+        with self._connect() as conn:
+            rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        return {str(row["name"]) for row in rows}
+
     def _initialize(self) -> None:
         with self._connect() as conn:
             conn.execute(
@@ -382,29 +387,38 @@ class SQLiteStore:
         return profile
 
     def get_sync_profile(self) -> dict[str, Any] | None:
+        columns = self._table_columns("sync_profile")
+        if not columns:
+            return None
+
+        selected_columns = [
+            column
+            for column in [
+                "baseline_date",
+                "baseline_value_usd",
+                "baseline_assets",
+                "initialized",
+                "initialized_at",
+                "last_sync_at",
+                "sync_version",
+                "initial_sync_completed",
+                "tracked_tickers",
+            ]
+            if column in columns
+        ]
+
+        if not selected_columns:
+            return None
+
+        sql = f"SELECT {', '.join(selected_columns)} FROM sync_profile WHERE id = 1"
         with self._connect() as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    baseline_date,
-                    baseline_value_usd,
-                    baseline_assets,
-                    initialized,
-                    initialized_at,
-                    last_sync_at,
-                    sync_version,
-                    initial_sync_completed,
-                    tracked_tickers
-                FROM sync_profile
-                WHERE id = 1
-                """
-            ).fetchone()
+            row = conn.execute(sql).fetchone()
 
         if row is None:
             return None
 
-        raw_tickers = row["tracked_tickers"]
-        raw_baseline = row["baseline_assets"]
+        raw_tickers = row["tracked_tickers"] if "tracked_tickers" in row.keys() else None
+        raw_baseline = row["baseline_assets"] if "baseline_assets" in row.keys() else None
         try:
             parsed = json.loads(str(raw_tickers))
             tracked = self._normalize_tickers(parsed) if isinstance(parsed, list) else []
@@ -417,18 +431,21 @@ class SQLiteStore:
         except (json.JSONDecodeError, TypeError, ValueError):
             baseline_assets = []
 
-        initialized_flag = bool(int(row["initialized"] or 0))
-        legacy_completed_flag = bool(int(row["initial_sync_completed"] or 0))
+        initialized_flag = bool(int(row["initialized"] or 0)) if "initialized" in row.keys() else False
+        legacy_completed_flag = bool(int(row["initial_sync_completed"] or 0)) if "initial_sync_completed" in row.keys() else False
         initialized = initialized_flag or legacy_completed_flag
 
+        baseline_date = str(row["baseline_date"] or date.today().isoformat()) if "baseline_date" in row.keys() else date.today().isoformat()
+        sync_version = int(row["sync_version"] or 1) if "sync_version" in row.keys() else 1
+
         return {
-            "baseline_date": str(row["baseline_date"]),
-            "baseline_value_usd": float(row["baseline_value_usd"]) if row["baseline_value_usd"] is not None else None,
+            "baseline_date": baseline_date,
+            "baseline_value_usd": float(row["baseline_value_usd"]) if "baseline_value_usd" in row.keys() and row["baseline_value_usd"] is not None else None,
             "baseline_assets": baseline_assets,
             "initialized": initialized,
-            "initialized_at": str(row["initialized_at"]) if row["initialized_at"] else None,
-            "last_sync_at": str(row["last_sync_at"]) if row["last_sync_at"] else None,
-            "sync_version": int(row["sync_version"] or 1),
+            "initialized_at": str(row["initialized_at"]) if "initialized_at" in row.keys() and row["initialized_at"] else None,
+            "last_sync_at": str(row["last_sync_at"]) if "last_sync_at" in row.keys() and row["last_sync_at"] else None,
+            "sync_version": sync_version,
             "initial_sync_completed": initialized,
             "tracked_tickers": tracked,
         }
