@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -24,17 +25,8 @@ PORTFOLIO_JSON = Path("data/portfolio.json")
 CACHE_PATH = Path("cache/market_cache.json")
 
 
-def _secrets_section(name: str) -> dict[str, str]:
-    raw = st.secrets.get(name, {}) if hasattr(st, "secrets") else {}
-    return raw if isinstance(raw, dict) else {}
-
-
-def _secret_value(*keys: str) -> str:
-    for key in keys:
-        value = st.secrets.get(key) if hasattr(st, "secrets") else None
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
+def _supports_dialog() -> bool:
+    return callable(getattr(st, "dialog", None))
 
 
 @st.cache_resource(show_spinner=False)
@@ -88,24 +80,62 @@ def compute_dashboard(db: SQLiteStore, market_service: MarketDataService) -> tup
     return metrics, since_start, profile
 
 
-def sync_robinhood(sync_service: RobinhoodSyncService) -> str:
-    robinhood = _secrets_section("robinhood")
-    email = robinhood.get("email") or _secret_value("robinhood_email", "ROBINHOOD_EMAIL")
-    password = robinhood.get("password") or _secret_value("robinhood_password", "ROBINHOOD_PASSWORD")
-    account_number = robinhood.get("account_number") or _secret_value("robinhood_account_number", "ROBINHOOD_ACCOUNT_NUMBER")
-    mfa_code = st.session_state.get("mfa_code", "").strip()
+def sync_robinhood(
+    sync_service: RobinhoodSyncService,
+    *,
+    email: str,
+    password: str,
+    account_number: str | None = None,
+    mfa_code: str = "",
+) -> str:
+    email = str(email or "").strip()
+    password = str(password or "").strip()
+    account_number = str(account_number or "").strip() or None
+    mfa_code = str(mfa_code or "").strip()
 
     if not email or not password:
-        raise RuntimeError("Set Robinhood credentials in Streamlit secrets before syncing.")
+        raise RuntimeError("Robinhood email and password are required.")
 
     result = sync_service.sync_transactions(
         email=email,
         password=password,
-        account_number=account_number or None,
+        account_number=account_number,
         mfa_callback=lambda: mfa_code,
-        status_callback=lambda message: st.session_state.__setitem__("sync_status", message),
+        status_callback=None,
     )
     return f"Imported {result.imported_count} transactions; new assets: {', '.join(result.new_tickers) if result.new_tickers else 'none'}"
+
+
+def _open_robinhood_dialog(sync_service: RobinhoodSyncService) -> None:
+    if _supports_dialog():
+        @st.dialog("Robinhood Credentials")
+        def _dialog() -> None:
+            with st.form("robinhood_credentials_form", clear_on_submit=True):
+                email = st.text_input("Robinhood email", type="default", key="robinhood_email_input")
+                password = st.text_input("Robinhood password", type="password", key="robinhood_password_input")
+                account_number = st.text_input("Account number (optional)", key="robinhood_account_input")
+                mfa_code = st.text_input("2FA code (if required)", type="password", key="robinhood_mfa_input")
+                submitted = st.form_submit_button("Sync now", use_container_width=True)
+
+            if submitted:
+                try:
+                    message = sync_robinhood(
+                        sync_service,
+                        email=email,
+                        password=password,
+                        account_number=account_number,
+                        mfa_code=mfa_code,
+                    )
+                    st.success(message)
+                    st.session_state["refresh_after_sync"] = True
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
+        _dialog()
+        return
+
+    st.warning("This Streamlit version does not support modal dialogs; use the sidebar form below.")
 
 
 def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
@@ -149,27 +179,17 @@ def main() -> None:
 
         st.divider()
         st.subheader("Robinhood Sync")
-        st.text_input("MFA code", key="mfa_code", type="password")
         if st.button("Sync Robinhood", use_container_width=True):
             try:
-                message = sync_robinhood(sync_service)
-                st.success(message)
-                st.rerun()
+                _open_robinhood_dialog(sync_service)
             except Exception as exc:
                 st.error(str(exc))
 
         if st.button("Refresh market data", use_container_width=True):
             st.rerun()
 
-    auto_sync_enabled = not profile.get("initialized") and not st.session_state.get("auto_sync_attempted")
-    if auto_sync_enabled:
-        st.session_state["auto_sync_attempted"] = True
-        try:
-            message = sync_robinhood(sync_service)
-            st.success(message)
-            st.rerun()
-        except Exception as exc:
-            st.warning(f"Automatic first-run sync was skipped or failed: {exc}")
+    if st.session_state.pop("refresh_after_sync", False):
+        st.rerun()
 
     try:
         metrics, since_start, profile = compute_dashboard(db, market_service)
