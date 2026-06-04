@@ -1,0 +1,18 @@
+{
+  "positions": [
+    {
+      "ticker": "AAPL",
+      "company_name": "Apple Inc",
+      "shares": 10,
+      "avg_price": 150.0,
+      "currency": "USD"
+    }
+  ],
+  "transactions": [
+    {
+      "ticker": "AAPL",
+      "date": "2026-01-15",
+      "amount": -1500.0
+    }
+  ]
+}
