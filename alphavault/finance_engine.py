@@ -159,12 +159,18 @@ def build_metrics_table(
         quote = quotes.get(pos.ticker)
         price = quote.price if quote and quote.price is not None else np.nan
         market_cap = quote.market_cap if quote else np.nan
+        previous_close = quote.previous_close if quote and quote.previous_close is not None else np.nan
         fx_rate = fx_to_usd.get(pos.currency, np.nan)
 
         unrealized_native = (price - avg_price) * current_shares if np.isfinite(price) and current_shares > 0 and avg_price > 0 else 0.0 if current_shares <= 0 else np.nan
         total_native = realized_native + (unrealized_native if np.isfinite(unrealized_native) else 0.0)
 
         total_change_pct = (total_native / total_buy_cost_native) * 100.0 if total_buy_cost_native > 0 else np.nan
+        last_day_change_pct = (
+            ((price - previous_close) / previous_close) * 100.0
+            if np.isfinite(price) and np.isfinite(previous_close) and previous_close > 0
+            else np.nan
+        )
         unrealized_change_pct = (
             ((price - avg_price) / avg_price) * 100.0
             if np.isfinite(price) and current_shares > 0 and avg_price > 0
@@ -195,6 +201,8 @@ def build_metrics_table(
                 "unrealized_change_pct": unrealized_change_pct,
                 "pnl_native": total_native,
                 "change_pct": total_change_pct,
+                "total_change_pct": total_change_pct,
+                "last_day_change_pct": last_day_change_pct,
                 "equity_usd": equity_usd,
                 "realized_pnl_usd": realized_usd,
                 "unrealized_pnl_usd": unrealized_usd,

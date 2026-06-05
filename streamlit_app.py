@@ -87,9 +87,18 @@ def compute_dashboard(db: SQLiteStore, market_service: MarketDataService) -> tup
     baseline_value_raw = profile.get("baseline_value_usd")
     baseline_value = float(baseline_value_raw) if baseline_value_raw is not None else None
     current_equity_usd = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
+    fallback_equity_usd = 0.0
+    if baseline_value is None or baseline_value <= 0:
+        for position in positions:
+            rate = float(snapshot.fx_to_usd.get(position.currency, 1.0) or 1.0)
+            if position.shares > 0 and position.avg_price > 0:
+                fallback_equity_usd += float(position.shares) * float(position.avg_price) * rate
     if baseline_value is None or baseline_value <= 0:
         if current_equity_usd > 0:
             baseline_value = current_equity_usd
+            db.set_baseline_value_usd(float(baseline_value))
+        elif fallback_equity_usd > 0:
+            baseline_value = fallback_equity_usd
             db.set_baseline_value_usd(float(baseline_value))
         elif baseline_value is None:
             baseline_value = 0.0
@@ -238,11 +247,27 @@ def main() -> None:
             "realized_pnl_usd",
             "unrealized_pnl_usd",
             "pnl_usd",
-            "change_pct",
+            "total_change_pct",
+            "last_day_change_pct",
             "xirr",
         ]
         available_columns = [column for column in display_columns if column in metrics.columns]
-        st.dataframe(metrics[available_columns].sort_values(by="equity_usd", ascending=False), use_container_width=True)
+        pretty_labels = {
+            "ticker": "Ticker",
+            "company_name": "Company",
+            "shares": "Shares",
+            "avg_price": "Avg Cost",
+            "current_price": "Current Price",
+            "equity_usd": "Market Value (USD)",
+            "realized_pnl_usd": "Realized P&L (USD)",
+            "unrealized_pnl_usd": "Unrealized P&L (USD)",
+            "pnl_usd": "Total P&L (USD)",
+            "total_change_pct": "Total Change %",
+            "last_day_change_pct": "Last Day Change %",
+            "xirr": "XIRR",
+        }
+        holdings_view = metrics[available_columns].rename(columns=pretty_labels)
+        st.dataframe(holdings_view.sort_values(by="Market Value (USD)", ascending=False), use_container_width=True)
 
     st.subheader("Status")
     st.json(

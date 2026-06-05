@@ -31,6 +31,7 @@ class Transaction:
 class Quote:
     price: float | None
     market_cap: float | None
+    previous_close: float | None = None
     company_name: str | None = None
     currency: str | None = None
 

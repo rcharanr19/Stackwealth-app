@@ -38,11 +38,20 @@ class MarketDataService:
 
         price = fast_info.get("lastPrice")
         market_cap = fast_info.get("marketCap")
+        previous_close = (
+            fast_info.get("previousClose")
+            or fast_info.get("regularMarketPreviousClose")
+            or fast_info.get("previous_close")
+        )
 
-        if price is None:
+        if price is None or previous_close is None:
             history = self._quiet_call(tk.history, period="5d")
             if not history.empty:
-                price = float(history["Close"].iloc[-1])
+                close_series = history["Close"].dropna()
+                if price is None and not close_series.empty:
+                    price = float(close_series.iloc[-1])
+                if previous_close is None and len(close_series) >= 2:
+                    previous_close = float(close_series.iloc[-2])
 
         company_name = None
         raw_currency = fast_info.get("currency")
@@ -51,6 +60,7 @@ class MarketDataService:
         return Quote(
             price=float(price) if price is not None else None,
             market_cap=float(market_cap) if market_cap is not None else None,
+            previous_close=float(previous_close) if previous_close is not None else None,
             company_name=company_name,
             currency=currency,
         )
@@ -225,6 +235,7 @@ class MarketDataService:
                     quotes[quote_ticker] = Quote(
                         price=raw_quote.get("price"),
                         market_cap=raw_quote.get("market_cap"),
+                        previous_close=raw_quote.get("previous_close"),
                         company_name=raw_quote.get("company_name"),
                         currency=raw_quote.get("currency"),
                     )
@@ -233,6 +244,7 @@ class MarketDataService:
                 quotes[quote_ticker] = Quote(
                     price=quote.price,
                     market_cap=quote.market_cap,
+                    previous_close=quote.previous_close,
                     company_name=raw_quote.get("company_name") or quote.company_name,
                     currency=raw_quote.get("currency") or quote.currency,
                 )

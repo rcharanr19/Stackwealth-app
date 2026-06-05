@@ -1086,9 +1086,18 @@ class StackWealthApp(ctk.CTk):
         baseline_value_raw = profile.get("baseline_value_usd") if profile else None
         baseline_value = float(baseline_value_raw) if baseline_value_raw is not None else None
         current_equity_usd = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
+        fallback_equity_usd = 0.0
+        if baseline_value is None or baseline_value <= 0:
+            for position in self.positions:
+                rate = float(snapshot.fx_to_usd.get(position.currency, 1.0) or 1.0)
+                if position.shares > 0 and position.avg_price > 0:
+                    fallback_equity_usd += float(position.shares) * float(position.avg_price) * rate
         if baseline_value is None or baseline_value <= 0:
             if current_equity_usd > 0:
                 baseline_value = current_equity_usd
+                self.db.set_baseline_value_usd(baseline_value)
+            elif fallback_equity_usd > 0:
+                baseline_value = fallback_equity_usd
                 self.db.set_baseline_value_usd(baseline_value)
             elif baseline_value is None:
                 baseline_value = 0.0
