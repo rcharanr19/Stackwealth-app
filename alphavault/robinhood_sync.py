@@ -20,11 +20,38 @@ class SyncResult:
 
 LOGGER = logging.getLogger(__name__)
 
+SYNC_SESSION_EXPIRES_IN_SECONDS = 300
+
 
 class RobinhoodSyncService:
     def __init__(self, db: SQLiteStore, market_service: MarketDataService) -> None:
         self.db = db
         self.market_service = market_service
+
+    @staticmethod
+    def _clear_saved_session(pickle_dir: str, pickle_name: str) -> None:
+        session_dir = Path(pickle_dir)
+        if not session_dir.exists():
+            return
+
+        candidates = [
+            session_dir / pickle_name,
+            session_dir / f"{pickle_name}.pickle",
+            session_dir / f"{pickle_name}.pkl",
+        ]
+        for candidate in candidates:
+            try:
+                if candidate.exists():
+                    candidate.unlink()
+            except Exception:
+                pass
+
+        for candidate in session_dir.glob(f"{pickle_name}*"):
+            try:
+                if candidate.is_file():
+                    candidate.unlink()
+            except Exception:
+                pass
 
     @staticmethod
     def _normalize_ticker(value: Any) -> str:
@@ -106,28 +133,31 @@ class RobinhoodSyncService:
 
             emit("Syncing Data...")
             pickle_dir = str((Path.cwd() / "cache").resolve())
+            pickle_name = "_alphavault"
+            self._clear_saved_session(pickle_dir, pickle_name)
             login_password = password
             login_resp = r.login(
                 username=email,
                 password=login_password,
-                store_session=True,
+                store_session=False,
                 pickle_path=pickle_dir,
-                pickle_name="_alphavault",
-                expiresIn=86400,
+                pickle_name=pickle_name,
+                expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
             )
 
             if not login_resp:
                 # Some accounts require explicit MFA code entry instead of app push approval.
                 mfa_code = mfa_provider()
                 if mfa_code:
+                    self._clear_saved_session(pickle_dir, pickle_name)
                     login_resp = r.login(
                         username=email,
                         password=login_password,
-                        store_session=True,
+                        store_session=False,
                         pickle_path=pickle_dir,
-                        pickle_name="_alphavault",
+                        pickle_name=pickle_name,
                         mfa_code=mfa_code,
-                        expiresIn=86400,
+                        expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
                     )
             # Best-effort secret lifetime reduction.
             password = None

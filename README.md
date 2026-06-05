@@ -69,6 +69,12 @@ The first time the app starts, it uses `data/portfolio.json` as the baseline uni
 
 Deploy the web app by pointing Streamlit Cloud at `streamlit_app.py`.
 
+Add an app password in Streamlit Cloud secrets to keep the app private behind a sign-in gate:
+
+```toml
+APP_PASSWORD = "your-strong-password"
+```
+
 Robinhood sync now uses a popup login form in the app. Credentials are entered only when you click Sync and are not written to files, secrets, or logs.
 
 First-run behavior:
@@ -86,6 +92,7 @@ Redeploy behavior:
 Notes:
 
 - Robinhood credentials are transient and only used for the sync request in the current session.
+- The Streamlit sync flow clears any saved Robinhood pickle before login and disables session reuse, so a fresh login challenge is required instead of silently reusing a cached session.
 - `Change` is defined as total return percentage: `(ending value - baseline value) / baseline value`.
 - `XIRR` uses actual transaction dates and terminal market value for open positions.
 

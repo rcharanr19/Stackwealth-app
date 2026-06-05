@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 import logging
 from datetime import date
 from pathlib import Path
@@ -27,6 +28,26 @@ CACHE_PATH = Path("cache/market_cache.json")
 
 def _supports_dialog() -> bool:
     return callable(getattr(st, "dialog", None))
+
+
+def require_login() -> None:
+    if st.session_state.get("authenticated"):
+        return
+
+    expected_password = str(st.secrets.get("APP_PASSWORD", "")).strip()
+    if not expected_password:
+        st.error("APP_PASSWORD is not configured. Add it in Streamlit app secrets.")
+        st.stop()
+
+    st.title("Sign in")
+    entered_password = st.text_input("Password", type="password", key="app_password_input")
+    if st.button("Enter", use_container_width=True):
+        if hmac.compare_digest(str(entered_password or ""), expected_password):
+            st.session_state["authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Invalid password")
+    st.stop()
 
 
 @st.cache_resource(show_spinner=False)
@@ -152,6 +173,7 @@ def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
 
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="📈", layout="wide")
+    require_login()
     st.title("StackWealth")
     st.caption("Baseline-first Robinhood sync with durable first-run state.")
 
