@@ -314,10 +314,9 @@ class StackWealthApp(ctk.CTk):
 
         self.snapshot: Snapshot | None = None
         self.metrics = None
-        self.portfolio_xirr: float | None = None
         self.portfolio_change_pct: float | None = None
 
-        self.result_queue: queue.Queue[tuple[Snapshot, Any, float | None, float | None]] = queue.Queue()
+        self.result_queue: queue.Queue[tuple[Snapshot, Any, float | None]] = queue.Queue()
         self.sync_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.refresh_in_progress = False
         self.sync_in_progress = False
@@ -364,15 +363,14 @@ class StackWealthApp(ctk.CTk):
     def _build_ui(self) -> None:
         header = ctk.CTkFrame(self, fg_color=PALETTE["panel"], corner_radius=18)
         header.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
-        header.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
+        header.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         self.kpi_total_value = self._make_kpi_card(header, 0, "Total Value", "Loading...")
         self.kpi_total_pnl = self._make_kpi_card(header, 1, "All-Time P&L", "Loading...")
-        self.kpi_xirr = self._make_kpi_card(header, 2, "Annualized XIRR", "Loading...")
-        self.kpi_change = self._make_kpi_card(header, 3, "Total Return %", "Loading...")
+        self.kpi_change = self._make_kpi_card(header, 2, "Total Return %", "Loading...")
 
         control_panel = ctk.CTkFrame(header, fg_color="transparent")
-        control_panel.grid(row=0, column=4, sticky="nsew", padx=10, pady=10)
+        control_panel.grid(row=0, column=3, sticky="nsew", padx=10, pady=10)
         control_panel.grid_columnconfigure(0, weight=1)
 
         toolbar_row = ctk.CTkFrame(control_panel, fg_color="transparent")
@@ -1085,10 +1083,15 @@ class StackWealthApp(ctk.CTk):
             stale_tickers=snapshot.stale_tickers,
         )
         self.db.update_market_snapshot(metrics.to_dict(orient="records"))
-        baseline_value = profile.get("baseline_value_usd") if profile else None
-        if baseline_value is None:
-            baseline_value = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
-            self.db.set_baseline_value_usd(baseline_value)
+        baseline_value_raw = profile.get("baseline_value_usd") if profile else None
+        baseline_value = float(baseline_value_raw) if baseline_value_raw is not None else None
+        current_equity_usd = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
+        if baseline_value is None or baseline_value <= 0:
+            if current_equity_usd > 0:
+                baseline_value = current_equity_usd
+                self.db.set_baseline_value_usd(baseline_value)
+            elif baseline_value is None:
+                baseline_value = 0.0
 
         since_start = compute_portfolio_since_start_metrics(
             tx_for_metrics,
@@ -1105,15 +1108,14 @@ class StackWealthApp(ctk.CTk):
             len(tracked_tickers),
             len(tx_for_metrics),
         )
-        self.result_queue.put((snapshot, metrics, since_start.get("xirr"), since_start.get("change_pct")))
+        self.result_queue.put((snapshot, metrics, since_start.get("change_pct")))
 
     def _poll_queue(self) -> None:
         try:
             try:
-                snapshot, metrics, portfolio_xirr, portfolio_change_pct = self.result_queue.get_nowait()
+                snapshot, metrics, portfolio_change_pct = self.result_queue.get_nowait()
                 self.snapshot = snapshot
                 self.metrics = metrics
-                self.portfolio_xirr = portfolio_xirr
                 self.portfolio_change_pct = portfolio_change_pct
                 self.refresh_in_progress = False
                 self.refresh_ui()
@@ -1219,11 +1221,8 @@ class StackWealthApp(ctk.CTk):
             text=fmt_money(total_pnl, "USD"),
             text_color=PALETTE["gain"] if total_pnl >= 0 else PALETTE["loss"],
         )
-        xirr_value = self.portfolio_xirr
         change_value = self.portfolio_change_pct
-        self.kpi_xirr._title_label.configure(text="Annualized XIRR (Since Start)")
         self.kpi_change._title_label.configure(text="Total Return % (Since Start)")
-        self.kpi_xirr.configure(text=fmt_pct(xirr_value * 100 if xirr_value is not None else np.nan))
         self.kpi_change.configure(text=fmt_pct(change_value))
 
         status_text = "● Online" if self.snapshot.online else "● Offline (cache)"

@@ -84,10 +84,15 @@ def compute_dashboard(db: SQLiteStore, market_service: MarketDataService) -> tup
     )
     db.update_market_snapshot(metrics.to_dict(orient="records"))
 
-    baseline_value = profile.get("baseline_value_usd")
-    if baseline_value is None:
-        baseline_value = float(metrics["equity_usd"].sum(skipna=True)) if not metrics.empty else 0.0
-        db.set_baseline_value_usd(float(baseline_value))
+    baseline_value_raw = profile.get("baseline_value_usd")
+    baseline_value = float(baseline_value_raw) if baseline_value_raw is not None else None
+    current_equity_usd = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
+    if baseline_value is None or baseline_value <= 0:
+        if current_equity_usd > 0:
+            baseline_value = current_equity_usd
+            db.set_baseline_value_usd(float(baseline_value))
+        elif baseline_value is None:
+            baseline_value = 0.0
 
     since_start = compute_portfolio_since_start_metrics(
         tx_for_metrics,
@@ -162,13 +167,11 @@ def _open_robinhood_dialog(sync_service: RobinhoodSyncService) -> None:
 def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
     total_value = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
     total_pnl = float(metrics["pnl_usd"].sum(skipna=True)) if "pnl_usd" in metrics else 0.0
-    cols = st.columns(4)
+    cols = st.columns(3)
     cols[0].metric("Total Value", f"${total_value:,.2f}")
     cols[1].metric("All-Time P&L", f"${total_pnl:,.2f}")
-    xirr = since_start.get("xirr")
     change_pct = since_start.get("change_pct")
-    cols[2].metric("XIRR", "N/A" if xirr is None else f"{float(xirr) * 100:,.2f}%")
-    cols[3].metric("Change", "N/A" if change_pct is None else f"{float(change_pct):,.2f}%")
+    cols[2].metric("Change", "N/A" if change_pct is None else f"{float(change_pct):,.2f}%")
 
 
 def main() -> None:
