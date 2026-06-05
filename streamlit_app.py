@@ -249,7 +249,6 @@ def main() -> None:
             "pnl_usd",
             "total_change_pct",
             "last_day_change_pct",
-            "xirr",
         ]
         available_columns = [column for column in display_columns if column in metrics.columns]
         pretty_labels = {
@@ -264,7 +263,6 @@ def main() -> None:
             "pnl_usd": "Total P&L (USD)",
             "total_change_pct": "Total Change %",
             "last_day_change_pct": "Last Day Change %",
-            "xirr": "XIRR",
         }
         holdings_view = metrics[available_columns].rename(columns=pretty_labels)
         st.dataframe(holdings_view.sort_values(by="Market Value (USD)", ascending=False), use_container_width=True)
