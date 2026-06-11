@@ -139,14 +139,19 @@ class RobinhoodSyncService:
             login_password = password
             
             # Try login with app push approval first
-            login_resp = r.login(
-                username=email,
-                password=login_password,
-                store_session=False,
-                pickle_path=pickle_dir,
-                pickle_name=pickle_name,
-                expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
-            )
+            try:
+                login_resp = r.login(
+                    username=email,
+                    password=login_password,
+                    store_session=False,
+                    pickle_path=pickle_dir,
+                    pickle_name=pickle_name,
+                    expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
+                )
+                LOGGER.debug("Initial login response: %s (type: %s)", type(login_resp), login_resp)
+            except Exception as login_exc:
+                LOGGER.error("Initial login raised exception: %s", login_exc, exc_info=True)
+                login_resp = None
 
             if not login_resp:
                 # Give the app approval a moment to register, then retry
@@ -154,17 +159,21 @@ class RobinhoodSyncService:
                 for retry_attempt in range(3):
                     time.sleep(2)  # Wait 2 seconds between retries
                     self._clear_saved_session(pickle_dir, pickle_name)
-                    login_resp = r.login(
-                        username=email,
-                        password=login_password,
-                        store_session=False,
-                        pickle_path=pickle_dir,
-                        pickle_name=pickle_name,
-                        expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
-                    )
-                    if login_resp:
-                        LOGGER.info("Login succeeded on retry attempt %d", retry_attempt + 1)
-                        break
+                    try:
+                        login_resp = r.login(
+                            username=email,
+                            password=login_password,
+                            store_session=False,
+                            pickle_path=pickle_dir,
+                            pickle_name=pickle_name,
+                            expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
+                        )
+                        LOGGER.debug("Retry %d login response: %s (type: %s)", retry_attempt + 1, type(login_resp), login_resp)
+                        if login_resp:
+                            LOGGER.info("Login succeeded on retry attempt %d", retry_attempt + 1)
+                            break
+                    except Exception as retry_exc:
+                        LOGGER.error("Retry %d login raised exception: %s", retry_attempt + 1, retry_exc, exc_info=True)
                     LOGGER.debug("Login retry %d failed, trying again...", retry_attempt + 1)
             
             # If app approval failed after retries, try MFA code
@@ -173,15 +182,20 @@ class RobinhoodSyncService:
                 mfa_code = mfa_provider()
                 if mfa_code:
                     self._clear_saved_session(pickle_dir, pickle_name)
-                    login_resp = r.login(
-                        username=email,
-                        password=login_password,
-                        store_session=False,
-                        pickle_path=pickle_dir,
-                        pickle_name=pickle_name,
-                        mfa_code=mfa_code,
-                        expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
-                    )
+                    try:
+                        login_resp = r.login(
+                            username=email,
+                            password=login_password,
+                            store_session=False,
+                            pickle_path=pickle_dir,
+                            pickle_name=pickle_name,
+                            mfa_code=mfa_code,
+                            expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
+                        )
+                        LOGGER.debug("MFA login response: %s (type: %s)", type(login_resp), login_resp)
+                    except Exception as mfa_exc:
+                        LOGGER.error("MFA login raised exception: %s", mfa_exc, exc_info=True)
+                        login_resp = None
             # Best-effort secret lifetime reduction.
             password = None
             login_password = None
@@ -189,7 +203,8 @@ class RobinhoodSyncService:
             if not login_resp:
                 raise RuntimeError(
                     "Robinhood login failed. Approve any in-app verification prompt, then retry. "
-                    "If your account uses SMS/authenticator 2FA, enter that code when prompted."
+                    "If your account uses SMS/authenticator 2FA, enter that code when prompted. "
+                    "Check app logs for detailed error information."
                 )
 
             profile = self.db.get_sync_profile()
