@@ -26,6 +26,42 @@ PORTFOLIO_JSON = Path("data/portfolio.json")
 CACHE_PATH = Path("cache/market_cache.json")
 
 
+def format_whole_number(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return value
+    return f"{int(abs(value)):,}"
+
+
+def format_currency(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return value
+    amount = int(abs(float(value)))
+    return f"-${amount:,}" if float(value) < 0 else f"${amount:,}"
+
+
+def format_signed_pct(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return value
+    return f"{float(value):+.2f}%"
+
+
+def format_unsigned_pct(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return value
+    return f"{float(value):.2f}%"
+
+
+def style_signed_value(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    numeric_value = float(value)
+    if numeric_value > 0:
+        return "color: #2ecc71"
+    if numeric_value < 0:
+        return "color: #e74c3c"
+    return ""
+
+
 def _supports_dialog() -> bool:
     return callable(getattr(st, "dialog", None))
 
@@ -281,8 +317,6 @@ def main() -> None:
         )
         # Sort by Market Value descending before formatting
         holdings_view = holdings_view.sort_values(by="Market Value", ascending=False, na_position="last")
-        # Format numeric columns as absolute values, rounded to whole numbers
-        formatted_view = holdings_view.copy()
         numeric_cols = [
             "Shares",
         ]
@@ -297,18 +331,30 @@ def main() -> None:
         percent_cols = [
             "Total Change %",
             "Day Change %",
-            "Allocation",
         ]
+        formatters: dict[str, Any] = {}
         for col in numeric_cols:
-            if col in formatted_view.columns:
-                formatted_view[col] = formatted_view[col].apply(lambda x: f"{int(abs(x)):,}" if x is not None and x == x else x)
+            if col in holdings_view.columns:
+                formatters[col] = format_whole_number
         for col in currency_cols:
-            if col in formatted_view.columns:
-                formatted_view[col] = formatted_view[col].apply(lambda x: f"-${int(abs(x)):,}" if x is not None and x == x and x < 0 else (f"${int(x):,}" if x is not None and x == x else x))
+            if col in holdings_view.columns:
+                formatters[col] = format_currency
         for col in percent_cols:
-            if col in formatted_view.columns:
-                formatted_view[col] = formatted_view[col].apply(lambda x: f"{x:+.2f}%" if x is not None and x == x else x)
-        st.dataframe(formatted_view, width="stretch")
+            if col in holdings_view.columns:
+                formatters[col] = format_signed_pct
+        if "Allocation" in holdings_view.columns:
+            formatters["Allocation"] = format_unsigned_pct
+
+        styled_view = holdings_view.style.format(formatters)
+        signed_value_columns = [
+            column
+            for column in ["Unrealized", "Realized", "Total P&L", "Total Change %", "Day Change %"]
+            if column in holdings_view.columns
+        ]
+        if signed_value_columns:
+            styled_view = styled_view.applymap(style_signed_value, subset=signed_value_columns)
+
+        st.dataframe(styled_view, width="stretch")
 
     st.subheader("Status")
     st.json(
