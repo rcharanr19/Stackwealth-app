@@ -11,17 +11,16 @@ import streamlit as st
 
 from alphavault.cache_store import CacheStore
 from alphavault.finance_engine import build_metrics_table, compute_portfolio_since_start_metrics
+from alphavault.postgres_store import PostgresStore
 from alphavault.logging_utils import configure_logging
 from alphavault.market_data import MarketDataService
 from alphavault.robinhood_sync import RobinhoodSyncService
-from alphavault.sqlite_store import SQLiteStore
 
 
 configure_logging()
 LOGGER = logging.getLogger(__name__)
 
 APP_TITLE = "StackWealth"
-DB_PATH = Path("data/alphavault.db")
 PORTFOLIO_JSON = Path("data/portfolio.json")
 CACHE_PATH = Path("cache/market_cache.json")
 
@@ -87,8 +86,11 @@ def require_login() -> None:
 
 
 @st.cache_resource(show_spinner=False)
-def get_services() -> tuple[SQLiteStore, MarketDataService, RobinhoodSyncService]:
-    db = SQLiteStore(DB_PATH)
+def get_services() -> tuple[PostgresStore, MarketDataService, RobinhoodSyncService]:
+    # WARNING: keep .streamlit/secrets.toml out of git; it contains live database credentials.
+    pg_conn = st.connection("postgresql", type="sql")
+    db = PostgresStore(pg_conn)
+    db.ensure_schema()
     db.seed_from_json(PORTFOLIO_JSON)
     db.bootstrap_sync_profile_from_portfolio_json(PORTFOLIO_JSON)
     cache = CacheStore(CACHE_PATH)
@@ -97,7 +99,7 @@ def get_services() -> tuple[SQLiteStore, MarketDataService, RobinhoodSyncService
     return db, market_service, sync_service
 
 
-def compute_dashboard(db: SQLiteStore, market_service: MarketDataService) -> tuple[pd.DataFrame, dict[str, object], dict[str, object]]:
+def compute_dashboard(db: PostgresStore, market_service: MarketDataService) -> tuple[pd.DataFrame, dict[str, object], dict[str, object]]:
     profile = db.get_sync_profile() or db.bootstrap_sync_profile_from_portfolio_json(PORTFOLIO_JSON)
     positions, transactions = db.load_portfolio_state()
     baseline_date = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
