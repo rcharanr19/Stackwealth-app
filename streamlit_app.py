@@ -276,6 +276,8 @@ def main() -> None:
         formatted_view = holdings_view.copy()
         numeric_cols = [
             "Shares",
+        ]
+        currency_cols = [
             "Avg Cost",
             "Current Price",
             "Market Value (USD)",
@@ -292,6 +294,9 @@ def main() -> None:
         for col in numeric_cols:
             if col in formatted_view.columns:
                 formatted_view[col] = formatted_view[col].apply(lambda x: int(abs(x)) if x is not None and x == x else x)
+        for col in currency_cols:
+            if col in formatted_view.columns:
+                formatted_view[col] = formatted_view[col].apply(lambda x: f"${int(x)}" if x is not None and x == x else x)
         for col in pnl_cols:
             if col in formatted_view.columns:
                 formatted_view[col] = formatted_view[col].apply(lambda x: f"+${int(x)}" if x is not None and x == x and x >= 0 else (f"-${int(abs(x))}" if x is not None and x == x else x))
