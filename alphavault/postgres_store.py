@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from sqlalchemy import text
 
 from .models import Position, Transaction, parse_position, parse_transaction
 
@@ -94,7 +95,7 @@ class PostgresStore:
         try:
             with self.connection.session as session:
                 for statement in statements:
-                    session.execute(statement)
+                    session.execute(text(statement))
                 session.commit()
         except Exception as exc:
             LOGGER.exception("PostgreSQL schema initialization failed: %s", exc)
