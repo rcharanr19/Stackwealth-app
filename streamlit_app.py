@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hmac
 import logging
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import streamlit as st
+import yfinance as yf
+import json
 
 from alphavault.cache_store import CacheStore
 from alphavault.finance_engine import build_metrics_table, compute_portfolio_since_start_metrics
@@ -15,6 +17,7 @@ from alphavault.postgres_store import PostgresStore
 from alphavault.logging_utils import configure_logging
 from alphavault.market_data import MarketDataService
 from alphavault.robinhood_sync import RobinhoodSyncService
+from tabs.ai_analysis import get_reverse_dcf_analysis, get_transcript_mosaic_analysis
 
 
 configure_logging()
@@ -59,6 +62,96 @@ def style_signed_value(value: Any) -> str:
     if numeric_value < 0:
         return "color: #e74c3c"
     return ""
+
+
+def _safe_float(value: Any) -> float | None:
+    try:
+        if value is None or pd.isna(value):
+            return None
+        return float(value)
+    except Exception:
+        return None
+
+
+def _market_cap_tier(market_cap: float | None) -> str:
+    if market_cap is None:
+        return "Unknown"
+    if market_cap >= 200_000_000_000:
+        return "Mega Cap"
+    if market_cap >= 10_000_000_000:
+        return "Large Cap"
+    if market_cap >= 2_000_000_000:
+        return "Mid Cap"
+    if market_cap >= 300_000_000:
+        return "Small Cap"
+    if market_cap >= 50_000_000:
+        return "Micro Cap"
+    return "Nano Cap"
+
+
+def _fmt_currency_2(value: Any) -> Any:
+    if value is None or pd.isna(value):
+        return value
+    return f"${float(value):,.2f}"
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_market_snapshot(tickers: tuple[str, ...]) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for ticker in tickers:
+        symbol = str(ticker).upper().strip()
+        if not symbol:
+            continue
+        instrument = yf.Ticker(symbol)
+        info = instrument.info or {}
+        fast_info = getattr(instrument, "fast_info", {}) or {}
+        price = _safe_float(fast_info.get("lastPrice"))
+        if price is None:
+            price = _safe_float(info.get("currentPrice"))
+        market_cap = _safe_float(info.get("marketCap"))
+        rows.append(
+            {
+                "ticker": symbol,
+                "current_price": price,
+                "market_cap": market_cap,
+                "market_cap_tier": _market_cap_tier(market_cap),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def load_active_holdings_df(db: PostgresStore) -> pd.DataFrame:
+    positions, _transactions = db.load_portfolio_state()
+    rows = [
+        {
+            "ticker": position.ticker,
+            "company_name": position.company_name,
+            "shares": float(position.shares),
+            "avg_cost": float(position.avg_price),
+            "cost_basis": float(position.shares) * float(position.avg_price),
+        }
+        for position in positions
+        if float(position.shares) > 0
+    ]
+    return pd.DataFrame(rows)
+
+
+def build_portfolio_summary(holdings: pd.DataFrame) -> pd.DataFrame:
+    if holdings.empty:
+        return holdings
+
+    unique_tickers = tuple(sorted({str(item).upper().strip() for item in holdings["ticker"].tolist()}))
+    market = fetch_market_snapshot(unique_tickers)
+    merged = holdings.merge(market, how="left", on="ticker")
+    merged["current_value"] = merged["shares"] * merged["current_price"]
+    merged["open_pnl"] = merged["current_value"] - merged["cost_basis"]
+    merged["open_pnl_margin_pct"] = (
+        (merged["open_pnl"] / merged["cost_basis"]) * 100.0
+    ).where(merged["cost_basis"] > 0)
+
+    total_value = float(merged["current_value"].sum(skipna=True))
+    merged["weight_pct"] = ((merged["current_value"] / total_value) * 100.0) if total_value > 0 else 0.0
+    return merged.sort_values(by="current_value", ascending=False, na_position="last")
 
 
 def _supports_dialog() -> bool:
@@ -271,107 +364,194 @@ def main() -> None:
         st.rerun()
 
     try:
-        metrics, since_start, profile = compute_dashboard(db, market_service)
+        active_holdings = load_active_holdings_df(db)
+        portfolio_summary = build_portfolio_summary(active_holdings) if not active_holdings.empty else active_holdings
     except Exception as exc:
-        st.error(f"Unable to compute portfolio metrics: {exc}")
+        st.error(f"Unable to load holdings and market data: {exc}")
         st.stop()
 
-    render_kpis(metrics, since_start)
+    # Persist fetched market snapshot to separate cache table (non-blocking)
+    try:
+        if not portfolio_summary.empty:
+            rows: list[dict[str, Any]] = []
+            now_iso = datetime.utcnow().isoformat()
+            for _, r in portfolio_summary.iterrows():
+                rows.append(
+                    {
+                        "ticker": r.get("ticker"),
+                        "current_price": float(r.get("current_price")) if r.get("current_price") is not None else None,
+                        "market_cap": float(r.get("market_cap")) if r.get("market_cap") is not None else None,
+                        "market_cap_tier": r.get("market_cap_tier"),
+                        "fetched_at": now_iso,
+                    }
+                )
+            try:
+                db.upsert_market_snapshot_cache(rows)
+            except Exception:
+                LOGGER.exception("market_snapshot_cache writeback failed; continuing without blocking UI")
+    except Exception:
+        LOGGER.exception("preparing market snapshot cache rows failed; continuing")
 
-    st.subheader("Holdings")
-    if metrics.empty:
-        st.info("No holdings found yet.")
-    else:
-        display_columns = [
-            "ticker",
-            "company_name",
-            "shares",
-            "avg_price",
-            "current_price",
-            "last_day_change_pct",
-            "total_change_pct",
-            "unrealized_pnl_usd",
-            "realized_pnl_usd",
-            "pnl_usd",
-            "equity_usd",
-        ]
-        available_columns = [column for column in display_columns if column in metrics.columns]
-        pretty_labels = {
-            "ticker": "Ticker",
-            "company_name": "Company",
-            "shares": "Shares",
-            "avg_price": "Avg Cost",
-            "current_price": "Current Price",
-            "last_day_change_pct": "Day Change %",
-            "total_change_pct": "Total Change %",
-            "unrealized_pnl_usd": "Unrealized",
-            "realized_pnl_usd": "Realized",
-            "pnl_usd": "Total P&L",
-            "equity_usd": "Market Value",
-        }
-        holdings_view = metrics[available_columns].rename(columns=pretty_labels)
-        # Calculate total portfolio value for allocation percentage
-        total_portfolio_value = metrics["equity_usd"].sum(skipna=True)
-        holdings_view["Allocation"] = (
-            (metrics["equity_usd"] / total_portfolio_value * 100.0)
-            if total_portfolio_value > 0
-            else 0.0
+    tickers = sorted({str(item).upper().strip() for item in active_holdings.get("ticker", pd.Series(dtype=str)).tolist()})
+
+    tab1, tab2, tab3 = st.tabs(["📊 Portfolio Summary", "📉 AI Reverse DCF", "📋 AI Transcript Mosaic"])
+
+    with tab1:
+        st.subheader("Portfolio Summary")
+        if portfolio_summary.empty:
+            st.info("No active holdings found in Supabase yet.")
+        else:
+            total_value = float(portfolio_summary["current_value"].sum(skipna=True))
+            total_cost = float(portfolio_summary["cost_basis"].sum(skipna=True))
+            total_open_pnl = float(portfolio_summary["open_pnl"].sum(skipna=True))
+            pnl_margin = ((total_open_pnl / total_cost) * 100.0) if total_cost > 0 else None
+
+            kpi1, kpi2, kpi3 = st.columns(3)
+            kpi1.metric("Current Value", f"${total_value:,.2f}")
+            kpi2.metric("Open P&L", f"${total_open_pnl:,.2f}")
+            kpi3.metric("Open P&L Margin", "N/A" if pnl_margin is None else f"{pnl_margin:+.2f}%")
+
+            display = portfolio_summary[
+                [
+                    "ticker",
+                    "company_name",
+                    "shares",
+                    "avg_cost",
+                    "cost_basis",
+                    "current_price",
+                    "current_value",
+                    "open_pnl",
+                    "open_pnl_margin_pct",
+                    "weight_pct",
+                    "market_cap_tier",
+                ]
+            ].rename(
+                columns={
+                    "ticker": "Ticker",
+                    "company_name": "Company",
+                    "shares": "Shares",
+                    "avg_cost": "Avg Cost",
+                    "cost_basis": "Cost Basis",
+                    "current_price": "Current Price",
+                    "current_value": "Current Value",
+                    "open_pnl": "Open P&L",
+                    "open_pnl_margin_pct": "Open P&L Margin %",
+                    "weight_pct": "Weight %",
+                    "market_cap_tier": "Market Cap Tier",
+                }
+            )
+
+            styler = display.style.format(
+                {
+                    "Shares": "{:.4f}",
+                    "Avg Cost": _fmt_currency_2,
+                    "Cost Basis": _fmt_currency_2,
+                    "Current Price": _fmt_currency_2,
+                    "Current Value": _fmt_currency_2,
+                    "Open P&L": _fmt_currency_2,
+                    "Open P&L Margin %": "{:+.2f}%",
+                    "Weight %": "{:.2f}%",
+                }
+            )
+
+            styled = styler.map(style_signed_value, subset=["Open P&L", "Open P&L Margin %"])
+            st.dataframe(styled, width="stretch")
+
+        st.subheader("Status")
+        st.json(
+            {
+                "initialized": bool(profile.get("initialized", False)),
+                "baseline_assets": profile.get("baseline_assets") or [],
+                "tracked_assets": profile.get("tracked_tickers") or [],
+                "baseline_date": profile.get("baseline_date"),
+                "last_sync_at": profile.get("last_sync_at"),
+            }
         )
-        # Sort by Market Value descending before formatting
-        holdings_view = holdings_view.sort_values(by="Market Value", ascending=False, na_position="last")
-        numeric_cols = [
-            "Shares",
-        ]
-        currency_cols = [
-            "Avg Cost",
-            "Current Price",
-            "Market Value",
-            "Unrealized",
-            "Realized",
-            "Total P&L",
-        ]
-        percent_cols = [
-            "Total Change %",
-            "Day Change %",
-        ]
-        formatters: dict[str, Any] = {}
-        for col in numeric_cols:
-            if col in holdings_view.columns:
-                formatters[col] = format_whole_number
-        for col in currency_cols:
-            if col in holdings_view.columns:
-                formatters[col] = format_currency
-        for col in percent_cols:
-            if col in holdings_view.columns:
-                formatters[col] = format_signed_pct
-        if "Allocation" in holdings_view.columns:
-            formatters["Allocation"] = format_unsigned_pct
 
-        styled_view = holdings_view.style.format(formatters)
-        signed_value_columns = [
-            column
-            for column in ["Unrealized", "Realized", "Total P&L", "Total Change %", "Day Change %"]
-            if column in holdings_view.columns
-        ]
-        if signed_value_columns:
-            styler_map = getattr(styled_view, "map", None)
-            if callable(styler_map):
-                styled_view = styler_map(style_signed_value, subset=signed_value_columns)
-            else:
-                styled_view = styled_view.applymap(style_signed_value, subset=signed_value_columns)
+    with tab2:
+        st.subheader("AI Reverse DCF")
+        if not tickers:
+            st.info("No active tickers are available for analysis.")
+        else:
+            selected_ticker = st.selectbox("Select ticker", options=tickers, key="reverse_dcf_ticker")
+            if st.button("Run Reverse DCF Analysis", key="run_reverse_dcf", width="stretch"):
+                try:
+                    with st.spinner("Running reverse DCF analysis..."):
+                        report = get_reverse_dcf_analysis(selected_ticker)
+                    st.markdown(report)
+                    # persist AI report (best-effort)
+                    try:
+                        # gather simple inputs from cached portfolio summary if available
+                        inputs = {"ticker": selected_ticker}
+                        if not portfolio_summary.empty and selected_ticker in portfolio_summary["ticker"].values:
+                            row = portfolio_summary[portfolio_summary["ticker"] == selected_ticker].iloc[0]
+                            inputs.update(
+                                {
+                                    "current_price": float(row.get("current_price")) if row.get("current_price") is not None else None,
+                                    "market_cap": float(row.get("market_cap")) if row.get("market_cap") is not None else None,
+                                }
+                            )
+                        try:
+                            db.insert_ai_analysis_report(
+                                ticker=selected_ticker,
+                                analysis_type="reverse_dcf",
+                                model="gemini-1.5-flash",
+                                prompt_summary=None,
+                                report_md=report,
+                                inputs=inputs,
+                                run_by=None,
+                            )
+                        except Exception:
+                            LOGGER.exception("Failed to persist reverse dcf report; continuing.")
+                    except Exception:
+                        LOGGER.exception("Preparing inputs for reverse dcf report failed; continuing.")
+                except Exception as exc:
+                    st.error(f"Reverse DCF analysis failed: {exc}")
 
-        st.dataframe(styled_view, width="stretch")
+    with tab3:
+        st.subheader("AI Transcript Mosaic")
+        mosaic_ticker = st.text_input("Ticker", key="mosaic_ticker").upper().strip()
+        transcript_file = st.file_uploader("Upload earnings transcript (.txt)", type=["txt"], key="mosaic_file")
 
-    st.subheader("Status")
-    st.json(
-        {
-            "initialized": bool(profile.get("initialized", False)),
-            "baseline_assets": profile.get("baseline_assets") or [],
-            "tracked_assets": profile.get("tracked_tickers") or [],
-            "baseline_date": profile.get("baseline_date"),
-            "last_sync_at": profile.get("last_sync_at"),
-        }
-    )
+        can_process = bool(mosaic_ticker and transcript_file is not None)
+        if st.button("Run Transcript Mosaic Analysis", key="run_mosaic", disabled=not can_process, width="stretch"):
+            try:
+                transcript_text = transcript_file.getvalue().decode("utf-8", errors="ignore")
+                if not transcript_text.strip():
+                    st.error("The uploaded transcript appears to be empty.")
+                else:
+                    # persist transcript first (best-effort)
+                    transcript_id = None
+                    try:
+                        transcript_id = db.insert_transcript(
+                            ticker=mosaic_ticker or None,
+                            filename=getattr(transcript_file, "name", None),
+                            content=transcript_text,
+                            source="upload",
+                        )
+                    except Exception:
+                        LOGGER.exception("Failed to persist uploaded transcript; continuing without transcript id.")
+
+                    with st.spinner("Running transcript mosaic analysis..."):
+                        report = get_transcript_mosaic_analysis(mosaic_ticker, transcript_text)
+                    st.markdown(report)
+
+                    # persist AI report (best-effort)
+                    try:
+                        inputs = {"ticker": mosaic_ticker, "transcript_id": transcript_id}
+                        db.insert_ai_analysis_report(
+                            ticker=mosaic_ticker,
+                            analysis_type="transcript_mosaic",
+                            model="gemini-1.5-flash",
+                            prompt_summary=None,
+                            report_md=report,
+                            inputs=inputs,
+                            run_by=None,
+                        )
+                    except Exception:
+                        LOGGER.exception("Failed to persist transcript mosaic report; continuing.")
+            except Exception as exc:
+                st.error(f"Transcript mosaic analysis failed: {exc}")
 
 
 if __name__ == "__main__":

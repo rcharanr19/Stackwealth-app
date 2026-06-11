@@ -712,6 +712,103 @@ class PostgresStore:
             LOGGER.exception("Update market snapshot failed: %s", exc)
             raise RuntimeError("Unable to update market snapshot") from exc
 
+    def upsert_market_snapshot_cache(self, rows: list[dict[str, Any]]) -> None:
+        """Upsert rows into public.market_snapshot_cache.
+
+        Each row should include: ticker, current_price, market_cap, market_cap_tier, fetched_at (optional).
+        """
+        try:
+            with self.connection.session as session:
+                for row in rows:
+                    session.execute(
+                        text("""
+                        INSERT INTO public.market_snapshot_cache (ticker, current_price, market_cap, market_cap_tier, fetched_at)
+                        VALUES (:ticker, :current_price, :market_cap, :market_cap_tier, :fetched_at)
+                        ON CONFLICT (ticker) DO UPDATE
+                        SET current_price = EXCLUDED.current_price,
+                            market_cap = EXCLUDED.market_cap,
+                            market_cap_tier = EXCLUDED.market_cap_tier,
+                            fetched_at = EXCLUDED.fetched_at
+                        """),
+                        {
+                            "ticker": row.get("ticker"),
+                            "current_price": row.get("current_price"),
+                            "market_cap": row.get("market_cap"),
+                            "market_cap_tier": row.get("market_cap_tier"),
+                            "fetched_at": row.get("fetched_at"),
+                        },
+                    )
+                session.commit()
+        except Exception as exc:
+            LOGGER.exception("Upsert market snapshot cache failed: %s", exc)
+            raise RuntimeError("Unable to upsert market snapshot cache") from exc
+
+    def insert_ai_analysis_report(
+        self,
+        ticker: str,
+        analysis_type: str,
+        model: str | None,
+        prompt_summary: str | None,
+        report_md: str | None,
+        inputs: dict[str, Any] | None,
+        run_by: str | None = None,
+        expires_at: str | None = None,
+    ) -> str:
+        """Insert a new AI analysis report and return the generated UUID as string."""
+        payload = json.dumps(inputs or {}, separators=(",", ":"))
+        try:
+            with self.connection.session as session:
+                result = session.execute(
+                    text("""
+                    INSERT INTO public.ai_analysis_reports
+                    (ticker, analysis_type, model, prompt_summary, report_md, inputs, run_by, created_at, expires_at)
+                    VALUES (:ticker, :analysis_type, :model, :prompt_summary, :report_md, :inputs::jsonb, :run_by, :created_at, :expires_at)
+                    RETURNING id
+                    """),
+                    {
+                        "ticker": ticker,
+                        "analysis_type": analysis_type,
+                        "model": model,
+                        "prompt_summary": prompt_summary,
+                        "report_md": report_md,
+                        "inputs": payload,
+                        "run_by": run_by,
+                        "created_at": datetime.utcnow().isoformat(),
+                        "expires_at": expires_at,
+                    },
+                )
+                row = result.fetchone()
+                session.commit()
+                return str(row[0]) if row else ""
+        except Exception as exc:
+            LOGGER.exception("Insert AI analysis report failed: %s", exc)
+            raise RuntimeError("Unable to insert AI analysis report") from exc
+
+    def insert_transcript(self, ticker: str | None, filename: str | None, content: str, source: str | None = None) -> str:
+        """Insert an uploaded transcript and return the generated UUID as string."""
+        try:
+            with self.connection.session as session:
+                result = session.execute(
+                    text("""
+                    INSERT INTO public.transcripts (ticker, filename, content, source, uploaded_at)
+                    VALUES (:ticker, :filename, :content, :source, :uploaded_at)
+                    RETURNING id
+                    """),
+                    {
+                        "ticker": ticker,
+                        "filename": filename,
+                        "content": content,
+                        "source": source,
+                        "uploaded_at": datetime.utcnow().isoformat(),
+                    },
+                )
+                row = result.fetchone()
+                session.commit()
+                return str(row[0]) if row else ""
+        except Exception as exc:
+            LOGGER.exception("Insert transcript failed: %s", exc)
+            raise RuntimeError("Unable to insert transcript") from exc
+
     def override_portfolio_position(
         self,
         ticker: str,
