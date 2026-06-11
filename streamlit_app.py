@@ -250,12 +250,12 @@ def main() -> None:
             "shares",
             "avg_price",
             "current_price",
-            "equity_usd",
-            "realized_pnl_usd",
-            "unrealized_pnl_usd",
-            "pnl_usd",
-            "total_change_pct",
             "last_day_change_pct",
+            "total_change_pct",
+            "unrealized_pnl_usd",
+            "realized_pnl_usd",
+            "pnl_usd",
+            "equity_usd",
         ]
         available_columns = [column for column in display_columns if column in metrics.columns]
         pretty_labels = {
@@ -264,16 +264,23 @@ def main() -> None:
             "shares": "Shares",
             "avg_price": "Avg Cost",
             "current_price": "Current Price",
-            "equity_usd": "Market Value (USD)",
-            "realized_pnl_usd": "Realized P&L (USD)",
-            "unrealized_pnl_usd": "Unrealized P&L (USD)",
-            "pnl_usd": "Total P&L (USD)",
+            "last_day_change_pct": "Day Change %",
             "total_change_pct": "Total Change %",
-            "last_day_change_pct": "Last Day Change %",
+            "unrealized_pnl_usd": "Unrealized",
+            "realized_pnl_usd": "Realized",
+            "pnl_usd": "Total P&L",
+            "equity_usd": "Market Value",
         }
         holdings_view = metrics[available_columns].rename(columns=pretty_labels)
-        # Sort by Market Value (USD) descending before formatting
-        holdings_view = holdings_view.sort_values(by="Market Value (USD)", ascending=False, na_position="last")
+        # Calculate total portfolio value for allocation percentage
+        total_portfolio_value = metrics["equity_usd"].sum(skipna=True)
+        holdings_view["Allocation"] = (
+            (metrics["equity_usd"] / total_portfolio_value * 100.0)
+            if total_portfolio_value > 0
+            else 0.0
+        )
+        # Sort by Market Value descending before formatting
+        holdings_view = holdings_view.sort_values(by="Market Value", ascending=False, na_position="last")
         # Format numeric columns as absolute values, rounded to whole numbers
         formatted_view = holdings_view.copy()
         numeric_cols = [
@@ -282,16 +289,15 @@ def main() -> None:
         currency_cols = [
             "Avg Cost",
             "Current Price",
-            "Market Value (USD)",
-        ]
-        pnl_cols = [
-            "Realized P&L (USD)",
-            "Unrealized P&L (USD)",
-            "Total P&L (USD)",
+            "Market Value",
+            "Unrealized",
+            "Realized",
+            "Total P&L",
         ]
         percent_cols = [
             "Total Change %",
-            "Last Day Change %",
+            "Day Change %",
+            "Allocation",
         ]
         for col in numeric_cols:
             if col in formatted_view.columns:
@@ -299,12 +305,9 @@ def main() -> None:
         for col in currency_cols:
             if col in formatted_view.columns:
                 formatted_view[col] = formatted_view[col].apply(lambda x: f"${int(x):,}" if x is not None and x == x else x)
-        for col in pnl_cols:
-            if col in formatted_view.columns:
-                formatted_view[col] = formatted_view[col].apply(lambda x: f"+${int(x):,}" if x is not None and x == x and x >= 0 else (f"-${int(abs(x)):,}" if x is not None and x == x else x))
         for col in percent_cols:
             if col in formatted_view.columns:
-                formatted_view[col] = formatted_view[col].apply(lambda x: f"{x:+.2f}" if x is not None and x == x else x)
+                formatted_view[col] = formatted_view[col].apply(lambda x: f"{x:+.2f}%" if x is not None and x == x else x)
         st.dataframe(formatted_view, width="stretch")
 
     st.subheader("Status")
