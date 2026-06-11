@@ -5,6 +5,7 @@ from datetime import date, datetime
 import logging
 from pathlib import Path
 import re
+import time
 from typing import Callable, Any
 
 from .logging_utils import mask_account, mask_email
@@ -136,6 +137,8 @@ class RobinhoodSyncService:
             pickle_name = "_alphavault"
             self._clear_saved_session(pickle_dir, pickle_name)
             login_password = password
+            
+            # Try login with app push approval first
             login_resp = r.login(
                 username=email,
                 password=login_password,
@@ -146,7 +149,27 @@ class RobinhoodSyncService:
             )
 
             if not login_resp:
-                # Some accounts require explicit MFA code entry instead of app push approval.
+                # Give the app approval a moment to register, then retry
+                emit("Awaiting app approval confirmation...")
+                for retry_attempt in range(3):
+                    time.sleep(2)  # Wait 2 seconds between retries
+                    self._clear_saved_session(pickle_dir, pickle_name)
+                    login_resp = r.login(
+                        username=email,
+                        password=login_password,
+                        store_session=False,
+                        pickle_path=pickle_dir,
+                        pickle_name=pickle_name,
+                        expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
+                    )
+                    if login_resp:
+                        LOGGER.info("Login succeeded on retry attempt %d", retry_attempt + 1)
+                        break
+                    LOGGER.debug("Login retry %d failed, trying again...", retry_attempt + 1)
+            
+            # If app approval failed after retries, try MFA code
+            if not login_resp:
+                emit("App approval not detected. Attempting 2FA code...")
                 mfa_code = mfa_provider()
                 if mfa_code:
                     self._clear_saved_session(pickle_dir, pickle_name)
