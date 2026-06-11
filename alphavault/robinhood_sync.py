@@ -5,7 +5,6 @@ from datetime import date, datetime
 import logging
 from pathlib import Path
 import re
-import time
 from typing import Callable, Any
 
 from .logging_utils import mask_account, mask_email
@@ -58,6 +57,28 @@ class RobinhoodSyncService:
     def _normalize_ticker(value: Any) -> str:
         return str(value or "").upper().strip()
 
+    @staticmethod
+    def _is_login_success(login_resp: Any) -> bool:
+        if not login_resp:
+            return False
+        if isinstance(login_resp, dict):
+            return bool(login_resp.get("access_token"))
+        return False
+
+    @staticmethod
+    def _extract_login_error(login_resp: Any) -> str:
+        if isinstance(login_resp, dict):
+            detail = str(login_resp.get("detail") or "").strip()
+            challenge = str(login_resp.get("challenge") or "").strip()
+            verification = str(login_resp.get("verification_workflow") or "").strip()
+            if detail:
+                return detail
+            if challenge:
+                return f"challenge={challenge}"
+            if verification:
+                return f"verification_workflow={verification}"
+        return "unknown login response"
+
     def _parse_tx_date(self, raw: Any) -> str:
         value = str(raw or "").strip()
         if not value:
@@ -83,6 +104,7 @@ class RobinhoodSyncService:
         status_callback: Callable[[str], None] | None = None,
         password: str | None = None,
         account_number: str | None = None,
+        push_only: bool = False,
     ) -> SyncResult:
         LOGGER.info(
             "Starting Robinhood sync for user=%s account=%s.",
@@ -115,12 +137,6 @@ class RobinhoodSyncService:
             if status_callback:
                 status_callback(status)
 
-        def mfa_provider() -> str:
-            emit("Awaiting 2FA Verification...")
-            code = mfa_callback().strip()
-            emit("Syncing Data...")
-            return code
-
         imported_count = 0
 
         try:
@@ -132,59 +148,26 @@ class RobinhoodSyncService:
 
             tracked_tickers = {t.upper().strip() for t in (profile or {}).get("tracked_tickers", [])}
 
+            # Validate credentials before attempting login
+            if not email or not email.strip():
+                raise RuntimeError("Email cannot be empty.")
+            if not password or not password.strip():
+                raise RuntimeError("Password cannot be empty.")
+            
+            LOGGER.debug("Attempting login for email=%s", mask_email(email))
+            
             emit("Syncing Data...")
             pickle_dir = str((Path.cwd() / "cache").resolve())
             pickle_name = "_alphavault"
             self._clear_saved_session(pickle_dir, pickle_name)
             login_password = password
             
-            # Try login with app push approval first
-            try:
-                login_resp = r.login(
-                    username=email,
-                    password=login_password,
-                    store_session=True,  # Allow session persistence during MFA flow
-                    pickle_path=pickle_dir,
-                    pickle_name=pickle_name,
-                    expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
-                )
-                LOGGER.debug("Initial login response: %s (type: %s)", type(login_resp), login_resp)
-            except Exception as login_exc:
-                LOGGER.error("Initial login raised exception: %s", login_exc, exc_info=True)
-                login_resp = None
+            login_resp = None
+            mfa_code = "" if push_only else mfa_callback().strip()
 
-            if not login_resp:
-                # Give the app approval a moment to register, then retry with longer waits
-                emit("Awaiting app approval confirmation... (this may take up to 30 seconds)")
-                for retry_attempt in range(6):
-                    time.sleep(5)  # Increased wait time from 2 to 5 seconds
-                    self._clear_saved_session(pickle_dir, pickle_name)
-                    try:
-                        login_resp = r.login(
-                            username=email,
-                            password=login_password,
-                            store_session=True,  # Allow session persistence during MFA flow
-                            pickle_path=pickle_dir,
-                            pickle_name=pickle_name,
-                            expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
-                        )
-                        LOGGER.debug("Retry %d login response: %s (type: %s)", retry_attempt + 1, type(login_resp), login_resp)
-                        if login_resp:
-                            LOGGER.info("Login succeeded on retry attempt %d", retry_attempt + 1)
-                            break
-                    except Exception as retry_exc:
-                        LOGGER.error("Retry %d login raised exception: %s", retry_attempt + 1, retry_exc, exc_info=True)
-                    LOGGER.debug("Login retry %d failed, trying again...", retry_attempt + 1)
-            
-            # If app approval failed after retries, require explicit SMS/2FA code
-            if not login_resp:
-                emit("App approval not detected. SMS 2FA code is required.")
-                LOGGER.warning("App push approval failed; prompting for SMS/2FA code instead.")
-                mfa_code = mfa_provider()
-                if not mfa_code:
-                    raise RuntimeError(
-                        "2FA code is required. Please enter the code sent to your phone via SMS or authenticator app."
-                    )
+            # If user provides a code, try that path first to avoid push challenge loops.
+            if mfa_code:
+                emit("Verifying 2FA code...")
                 self._clear_saved_session(pickle_dir, pickle_name)
                 try:
                     login_resp = r.login(
@@ -196,19 +179,49 @@ class RobinhoodSyncService:
                         mfa_code=mfa_code,
                         expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
                     )
-                    LOGGER.debug("MFA login response: %s (type: %s)", type(login_resp), login_resp)
+                    LOGGER.debug("MFA login response: %s", login_resp)
                 except Exception as mfa_exc:
                     LOGGER.error("MFA login raised exception: %s", mfa_exc, exc_info=True)
                     login_resp = None
+            else:
+                # Only one app-push attempt; repeated logins trigger fresh pushes and invalidate prior approvals.
+                emit("Check Robinhood app and approve the login request...")
+                self._clear_saved_session(pickle_dir, pickle_name)
+                try:
+                    login_resp = r.login(
+                        username=email,
+                        password=login_password,
+                        store_session=True,
+                        pickle_path=pickle_dir,
+                        pickle_name=pickle_name,
+                        expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
+                    )
+                    LOGGER.debug("Initial login response: %s", login_resp)
+                except Exception as login_exc:
+                    LOGGER.error("Initial login raised exception: %s", login_exc, exc_info=True)
+                    login_resp = None
+
+                if not self._is_login_success(login_resp):
+                    LOGGER.warning(
+                        "Push verification did not produce access token: %s",
+                        self._extract_login_error(login_resp),
+                    )
+
             # Best-effort secret lifetime reduction.
             password = None
             login_password = None
 
-            if not login_resp:
+            if not self._is_login_success(login_resp):
+                if push_only:
+                    raise RuntimeError(
+                        "Robinhood login did not return an access token after push approval. "
+                        "Push-only mode is enabled, so SMS/authenticator fallback is disabled. "
+                        "Retry sync and approve the most recent push immediately."
+                    )
                 raise RuntimeError(
-                    "Robinhood login failed. Check that your email and password are correct, "
-                    "2FA is enabled on your account, and you have approved/entered the verification code. "
-                    "Check app logs for detailed error information."
+                    "Robinhood login did not return an access token after verification. "
+                    "This is a known robin_stocks challenge-flow issue for app push approvals. "
+                    "Enter an SMS/authenticator 2FA code in the sync dialog and retry."
                 )
 
             profile = self.db.get_sync_profile()

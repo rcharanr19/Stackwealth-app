@@ -41,7 +41,7 @@ def require_login() -> None:
 
     st.title("Sign in")
     entered_password = st.text_input("Password", type="password", key="app_password_input")
-    if st.button("Enter", use_container_width=True):
+    if st.button("Enter", width="stretch"):
         if hmac.compare_digest(str(entered_password or ""), expected_password):
             st.session_state["authenticated"] = True
             st.rerun()
@@ -122,6 +122,7 @@ def sync_robinhood(
     password: str,
     account_number: str | None = None,
     mfa_code: str = "",
+    push_only: bool = False,
 ) -> str:
     email = str(email or "").strip()
     password = str(password or "").strip()
@@ -137,6 +138,7 @@ def sync_robinhood(
         account_number=account_number,
         mfa_callback=lambda: mfa_code,
         status_callback=None,
+        push_only=push_only,
     )
     return f"Imported {result.imported_count} transactions; new assets: {', '.join(result.new_tickers) if result.new_tickers else 'none'}"
 
@@ -149,8 +151,8 @@ def _open_robinhood_dialog(sync_service: RobinhoodSyncService) -> None:
                 email = st.text_input("Robinhood email", type="default", key="robinhood_email_input")
                 password = st.text_input("Robinhood password", type="password", key="robinhood_password_input")
                 account_number = st.text_input("Account number (optional)", key="robinhood_account_input")
-                mfa_code = st.text_input("2FA code (if required)", type="password", key="robinhood_mfa_input")
-                submitted = st.form_submit_button("Sync now", use_container_width=True)
+                st.caption("Auth mode: Push only")
+                submitted = st.form_submit_button("Sync now", width="stretch")
 
             if submitted:
                 try:
@@ -159,7 +161,8 @@ def _open_robinhood_dialog(sync_service: RobinhoodSyncService) -> None:
                         email=email,
                         password=password,
                         account_number=account_number,
-                        mfa_code=mfa_code,
+                        mfa_code="",
+                        push_only=True,
                     )
                     st.balloons()
                     st.success(f"✅ Sync Successful!\n\n{message}")
@@ -216,13 +219,13 @@ def main() -> None:
 
         st.divider()
         st.subheader("Robinhood Sync")
-        if st.button("Sync Robinhood", use_container_width=True):
+        if st.button("Sync Robinhood", width="stretch"):
             try:
                 _open_robinhood_dialog(sync_service)
             except Exception as exc:
                 st.error(str(exc))
 
-        if st.button("Refresh market data", use_container_width=True):
+        if st.button("Refresh market data", width="stretch"):
             st.rerun()
 
     if st.session_state.pop("refresh_after_sync", False):
@@ -268,7 +271,7 @@ def main() -> None:
             "last_day_change_pct": "Last Day Change %",
         }
         holdings_view = metrics[available_columns].rename(columns=pretty_labels)
-        st.dataframe(holdings_view.sort_values(by="Market Value (USD)", ascending=False), use_container_width=True)
+        st.dataframe(holdings_view.sort_values(by="Market Value (USD)", ascending=False), width="stretch")
 
     st.subheader("Status")
     st.json(
