@@ -352,7 +352,11 @@ def main() -> None:
             if column in holdings_view.columns
         ]
         if signed_value_columns:
-            styled_view = styled_view.applymap(style_signed_value, subset=signed_value_columns)
+            styler_map = getattr(styled_view, "map", None)
+            if callable(styler_map):
+                styled_view = styler_map(style_signed_value, subset=signed_value_columns)
+            else:
+                styled_view = styled_view.applymap(style_signed_value, subset=signed_value_columns)
 
         st.dataframe(styled_view, width="stretch")
 

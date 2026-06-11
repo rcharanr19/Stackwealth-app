@@ -8,6 +8,7 @@ StackWealth tracks a global, multi-currency equity portfolio with live market da
 - customtkinter (desktop UI)
 - streamlit (web UI for Streamlit Community Cloud)
 - pandas, numpy, numpy-financial
+- jinja2 (required for pandas Styler rendering in Streamlit)
 - yfinance
 - pyinstaller
 
