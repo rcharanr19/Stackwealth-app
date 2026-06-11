@@ -272,6 +272,8 @@ def main() -> None:
             "last_day_change_pct": "Last Day Change %",
         }
         holdings_view = metrics[available_columns].rename(columns=pretty_labels)
+        # Sort by Market Value (USD) descending before formatting
+        holdings_view = holdings_view.sort_values(by="Market Value (USD)", ascending=False, na_position="last")
         # Format numeric columns as absolute values, rounded to whole numbers
         formatted_view = holdings_view.copy()
         numeric_cols = [
@@ -303,7 +305,7 @@ def main() -> None:
         for col in percent_cols:
             if col in formatted_view.columns:
                 formatted_view[col] = formatted_view[col].apply(lambda x: f"{x:+.2f}" if x is not None and x == x else x)
-        st.dataframe(formatted_view.sort_values(by="Market Value (USD)", ascending=False, na_position="last"), width="stretch")
+        st.dataframe(formatted_view, width="stretch")
 
     st.subheader("Status")
     st.json(
