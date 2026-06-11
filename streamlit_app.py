@@ -183,8 +183,8 @@ def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
     total_value = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
     total_pnl = float(metrics["pnl_usd"].sum(skipna=True)) if "pnl_usd" in metrics else 0.0
     cols = st.columns(3)
-    cols[0].metric("Total Value", f"${total_value:,.2f}")
-    cols[1].metric("All-Time P&L", f"${total_pnl:,.2f}")
+    cols[0].metric("Total Value", f"${abs(total_value):,.0f}")
+    cols[1].metric("All-Time P&L", f"${abs(total_pnl):,.0f}")
     change_pct = since_start.get("change_pct")
     cols[2].metric("Change", "N/A" if change_pct is None else f"{float(change_pct):,.2f}%")
 
@@ -271,7 +271,28 @@ def main() -> None:
             "last_day_change_pct": "Last Day Change %",
         }
         holdings_view = metrics[available_columns].rename(columns=pretty_labels)
-        st.dataframe(holdings_view.sort_values(by="Market Value (USD)", ascending=False), width="stretch")
+        # Format numeric columns as absolute values, rounded to whole numbers
+        formatted_view = holdings_view.copy()
+        numeric_cols = [
+            "Shares",
+            "Avg Cost",
+            "Current Price",
+            "Market Value (USD)",
+            "Realized P&L (USD)",
+            "Unrealized P&L (USD)",
+            "Total P&L (USD)",
+        ]
+        percent_cols = [
+            "Total Change %",
+            "Last Day Change %",
+        ]
+        for col in numeric_cols:
+            if col in formatted_view.columns:
+                formatted_view[col] = formatted_view[col].apply(lambda x: int(abs(x)) if x is not None and x == x else x)
+        for col in percent_cols:
+            if col in formatted_view.columns:
+                formatted_view[col] = formatted_view[col].apply(lambda x: f"{x:.2f}" if x is not None and x == x else x)
+        st.dataframe(formatted_view.sort_values(by="Market Value (USD)", ascending=False, na_position="last"), width="stretch")
 
     st.subheader("Status")
     st.json(
