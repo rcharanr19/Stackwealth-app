@@ -184,9 +184,10 @@ def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
     total_pnl = float(metrics["pnl_usd"].sum(skipna=True)) if "pnl_usd" in metrics else 0.0
     cols = st.columns(3)
     cols[0].metric("Total Value", f"${abs(total_value):,.0f}")
-    cols[1].metric("All-Time P&L", f"${abs(total_pnl):,.0f}")
+    pnl_sign = "+" if total_pnl >= 0 else "-"
+    cols[1].metric("All-Time P&L", f"{pnl_sign}${abs(total_pnl):,.0f}")
     change_pct = since_start.get("change_pct")
-    cols[2].metric("Change", "N/A" if change_pct is None else f"{float(change_pct):,.2f}%")
+    cols[2].metric("Change", "N/A" if change_pct is None else f"{float(change_pct):+.2f}%")
 
 
 def main() -> None:
@@ -278,6 +279,8 @@ def main() -> None:
             "Avg Cost",
             "Current Price",
             "Market Value (USD)",
+        ]
+        pnl_cols = [
             "Realized P&L (USD)",
             "Unrealized P&L (USD)",
             "Total P&L (USD)",
@@ -289,9 +292,12 @@ def main() -> None:
         for col in numeric_cols:
             if col in formatted_view.columns:
                 formatted_view[col] = formatted_view[col].apply(lambda x: int(abs(x)) if x is not None and x == x else x)
+        for col in pnl_cols:
+            if col in formatted_view.columns:
+                formatted_view[col] = formatted_view[col].apply(lambda x: f"+${int(x)}" if x is not None and x == x and x >= 0 else (f"-${int(abs(x))}" if x is not None and x == x else x))
         for col in percent_cols:
             if col in formatted_view.columns:
-                formatted_view[col] = formatted_view[col].apply(lambda x: f"{x:.2f}" if x is not None and x == x else x)
+                formatted_view[col] = formatted_view[col].apply(lambda x: f"{x:+.2f}" if x is not None and x == x else x)
         st.dataframe(formatted_view.sort_values(by="Market Value (USD)", ascending=False, na_position="last"), width="stretch")
 
     st.subheader("Status")
