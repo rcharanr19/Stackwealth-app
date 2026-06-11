@@ -36,7 +36,7 @@ class PostgresStore:
     def _execute(self, sql: str, *, params: dict[str, Any] | None = None, action: str) -> None:
         try:
             with self.connection.session as session:
-                session.execute(sql, params or {})
+                session.execute(text(sql), params or {})
                 session.commit()
         except Exception as exc:
             LOGGER.exception("%s failed: %s", action, exc)
@@ -179,12 +179,12 @@ class PostgresStore:
                 with self.connection.session as session:
                     for position in positions:
                         session.execute(
-                            """
+                            text("""
                             INSERT INTO public.portfolio_cache
                             (ticker, company_name, shares, avg_price, currency, last_price, market_cap, unrealized_pnl_usd, realized_pnl_usd, updated_at)
                             VALUES (:ticker, :company_name, :shares, :avg_price, :currency, NULL, NULL, NULL, NULL, :updated_at)
                             ON CONFLICT (ticker) DO NOTHING
-                            """,
+                            """),
                             {
                                 "ticker": position.ticker,
                                 "company_name": position.company_name,
@@ -216,12 +216,12 @@ class PostgresStore:
                 with self.connection.session as session:
                     for row in rows:
                         session.execute(
-                            """
+                            text("""
                             INSERT INTO public.transactions
                             (execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency)
                             VALUES (:execution_id, :order_id, :ticker, :tx_date, :side, :shares, :price, :amount, :currency)
                             ON CONFLICT (execution_id) DO NOTHING
-                            """,
+                            """),
                             row,
                         )
                     session.commit()
@@ -291,12 +291,12 @@ class PostgresStore:
         try:
             with self.connection.session as session:
                 result = session.execute(
-                    """
+                    text("""
                     INSERT INTO public.transactions
                     (execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency)
                     VALUES (:execution_id, :order_id, :ticker, :tx_date, :side, :shares, :price, :amount, :currency)
                     ON CONFLICT (execution_id) DO NOTHING
-                    """,
+                    """),
                     {
                         "execution_id": execution_id,
                         "order_id": order_id,
@@ -357,14 +357,14 @@ class PostgresStore:
         try:
             with self.connection.session as session:
                 session.execute(
-                    """
+                    text("""
                     INSERT INTO public.sync_profile
                     (id, baseline_date, baseline_value_usd, baseline_assets, initialized, initialized_at, last_sync_at,
                      sync_version, initial_sync_completed, tracked_tickers, updated_at)
                     VALUES (1, :baseline_date, NULL, :baseline_assets, :initialized, NULL, NULL, 1, :initial_sync_completed,
                             :tracked_tickers, :updated_at)
                     ON CONFLICT (id) DO NOTHING
-                    """,
+                    """),
                     {
                         "baseline_date": baseline_date,
                         "baseline_assets": baseline_payload,
@@ -688,7 +688,7 @@ class PostgresStore:
             with self.connection.session as session:
                 for row in rows:
                     session.execute(
-                        """
+                        text("""
                         UPDATE public.portfolio_cache
                         SET
                             last_price = :last_price,
@@ -697,7 +697,7 @@ class PostgresStore:
                             realized_pnl_usd = :realized_pnl_usd,
                             updated_at = :updated_at
                         WHERE ticker = :ticker
-                        """,
+                        """),
                         {
                             "last_price": row.get("current_price"),
                             "market_cap": row.get("market_cap"),
@@ -748,9 +748,9 @@ class PostgresStore:
     def delete_portfolio_position(self, ticker: str, delete_transactions: bool = True) -> None:
         try:
             with self.connection.session as session:
-                session.execute("DELETE FROM public.portfolio_cache WHERE ticker = :ticker", {"ticker": ticker})
+                session.execute(text("DELETE FROM public.portfolio_cache WHERE ticker = :ticker"), {"ticker": ticker})
                 if delete_transactions:
-                    session.execute("DELETE FROM public.transactions WHERE ticker = :ticker", {"ticker": ticker})
+                    session.execute(text("DELETE FROM public.transactions WHERE ticker = :ticker"), {"ticker": ticker})
                 session.commit()
         except Exception as exc:
             LOGGER.exception("Delete portfolio position failed: %s", exc)
