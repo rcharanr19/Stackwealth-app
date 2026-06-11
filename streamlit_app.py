@@ -161,7 +161,10 @@ def _open_robinhood_dialog(sync_service: RobinhoodSyncService) -> None:
                         account_number=account_number,
                         mfa_code=mfa_code,
                     )
-                    st.success(message)
+                    st.balloons()
+                    st.success(f"✅ Sync Successful!\n\n{message}")
+                    if callable(getattr(st, "toast", None)):
+                        st.toast("Robinhood sync completed successfully!", icon="✅")
                     st.session_state["refresh_after_sync"] = True
                     st.rerun()
                 except Exception as exc:

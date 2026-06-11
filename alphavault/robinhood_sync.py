@@ -143,7 +143,7 @@ class RobinhoodSyncService:
                 login_resp = r.login(
                     username=email,
                     password=login_password,
-                    store_session=False,
+                    store_session=True,  # Allow session persistence during MFA flow
                     pickle_path=pickle_dir,
                     pickle_name=pickle_name,
                     expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
@@ -154,16 +154,16 @@ class RobinhoodSyncService:
                 login_resp = None
 
             if not login_resp:
-                # Give the app approval a moment to register, then retry
-                emit("Awaiting app approval confirmation...")
-                for retry_attempt in range(3):
-                    time.sleep(2)  # Wait 2 seconds between retries
+                # Give the app approval a moment to register, then retry with longer waits
+                emit("Awaiting app approval confirmation... (this may take up to 30 seconds)")
+                for retry_attempt in range(6):
+                    time.sleep(5)  # Increased wait time from 2 to 5 seconds
                     self._clear_saved_session(pickle_dir, pickle_name)
                     try:
                         login_resp = r.login(
                             username=email,
                             password=login_password,
-                            store_session=False,
+                            store_session=True,  # Allow session persistence during MFA flow
                             pickle_path=pickle_dir,
                             pickle_name=pickle_name,
                             expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
@@ -176,34 +176,38 @@ class RobinhoodSyncService:
                         LOGGER.error("Retry %d login raised exception: %s", retry_attempt + 1, retry_exc, exc_info=True)
                     LOGGER.debug("Login retry %d failed, trying again...", retry_attempt + 1)
             
-            # If app approval failed after retries, try MFA code
+            # If app approval failed after retries, require explicit SMS/2FA code
             if not login_resp:
-                emit("App approval not detected. Attempting 2FA code...")
+                emit("App approval not detected. SMS 2FA code is required.")
+                LOGGER.warning("App push approval failed; prompting for SMS/2FA code instead.")
                 mfa_code = mfa_provider()
-                if mfa_code:
-                    self._clear_saved_session(pickle_dir, pickle_name)
-                    try:
-                        login_resp = r.login(
-                            username=email,
-                            password=login_password,
-                            store_session=False,
-                            pickle_path=pickle_dir,
-                            pickle_name=pickle_name,
-                            mfa_code=mfa_code,
-                            expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
-                        )
-                        LOGGER.debug("MFA login response: %s (type: %s)", type(login_resp), login_resp)
-                    except Exception as mfa_exc:
-                        LOGGER.error("MFA login raised exception: %s", mfa_exc, exc_info=True)
-                        login_resp = None
+                if not mfa_code:
+                    raise RuntimeError(
+                        "2FA code is required. Please enter the code sent to your phone via SMS or authenticator app."
+                    )
+                self._clear_saved_session(pickle_dir, pickle_name)
+                try:
+                    login_resp = r.login(
+                        username=email,
+                        password=login_password,
+                        store_session=True,
+                        pickle_path=pickle_dir,
+                        pickle_name=pickle_name,
+                        mfa_code=mfa_code,
+                        expiresIn=SYNC_SESSION_EXPIRES_IN_SECONDS,
+                    )
+                    LOGGER.debug("MFA login response: %s (type: %s)", type(login_resp), login_resp)
+                except Exception as mfa_exc:
+                    LOGGER.error("MFA login raised exception: %s", mfa_exc, exc_info=True)
+                    login_resp = None
             # Best-effort secret lifetime reduction.
             password = None
             login_password = None
 
             if not login_resp:
                 raise RuntimeError(
-                    "Robinhood login failed. Approve any in-app verification prompt, then retry. "
-                    "If your account uses SMS/authenticator 2FA, enter that code when prompted. "
+                    "Robinhood login failed. Check that your email and password are correct, "
+                    "2FA is enabled on your account, and you have approved/entered the verification code. "
                     "Check app logs for detailed error information."
                 )
 
