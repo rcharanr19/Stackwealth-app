@@ -183,6 +183,12 @@ def build_metrics_table(
         unrealized_usd = unrealized_native * fx_rate if np.isfinite(unrealized_native) and np.isfinite(fx_rate) else np.nan
         total_usd = realized_usd + unrealized_usd if np.isfinite(realized_usd) and np.isfinite(unrealized_usd) else np.nan
 
+        # Compute cost-basis in native and USD so callers can display correct P&L
+        cost_basis_native = current_shares * avg_price if current_shares > 0 and avg_price is not None else 0.0 if current_shares <= 0 else np.nan
+        avg_cost_usd = avg_price * fx_rate if np.isfinite(avg_price) and np.isfinite(fx_rate) else np.nan
+        cost_basis_usd = cost_basis_native * fx_rate if np.isfinite(cost_basis_native) and np.isfinite(fx_rate) else np.nan
+        current_price_usd = price * fx_rate if np.isfinite(price) and np.isfinite(fx_rate) else np.nan
+
         terminal_value_native = equity_native if current_shares > 0 else 0.0
         xirr = compute_xirr(ticker_transactions, float(terminal_value_native) if np.isfinite(terminal_value_native) else 0.0)
 
@@ -192,10 +198,15 @@ def build_metrics_table(
                 "company_name": pos.company_name,
                 "shares": current_shares,
                 "avg_price": pos.avg_price,
+                # USD-normalized fields for display
+                "avg_cost": avg_cost_usd,
+                "cost_basis": cost_basis_usd,
                 "currency": pos.currency,
                 "current_price": price,
+                "current_price_usd": current_price_usd,
                 "market_cap": market_cap,
                 "equity_native": equity_native,
+                "cost_basis_native": cost_basis_native,
                 "realized_pnl_native": realized_native,
                 "unrealized_pnl_native": unrealized_native,
                 "unrealized_change_pct": unrealized_change_pct,
@@ -217,8 +228,10 @@ def build_metrics_table(
     total_usd = float(df["equity_usd"].sum(skipna=True)) if not df.empty else 0.0
     if total_usd > 0 and "equity_usd" in df:
         df["allocation_pct"] = (df["equity_usd"] / total_usd) * 100.0
+        df["weight_pct"] = df["allocation_pct"]
     else:
         df["allocation_pct"] = np.nan
+        df["weight_pct"] = np.nan
 
     return df
 

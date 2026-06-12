@@ -369,8 +369,24 @@ def main() -> None:
         st.rerun()
 
     try:
-        active_holdings = load_active_holdings_df(db)
-        portfolio_summary = build_portfolio_summary(active_holdings) if not active_holdings.empty else active_holdings
+        # Use compute_dashboard to get the FX-normalized metrics (USD-aware)
+        metrics, since_start, profile = compute_dashboard(db, market_service)
+        portfolio_summary = metrics if not metrics.empty else metrics
+        # Derive display columns expected by the UI using USD-normalized fields
+        if not portfolio_summary.empty:
+            portfolio_summary = portfolio_summary.copy()
+            # Prefer USD-normalized per-share price when available
+            if "current_price_usd" in portfolio_summary.columns:
+                portfolio_summary["current_price"] = portfolio_summary["current_price_usd"]
+            # Current value and open P&L in USD
+            portfolio_summary["current_value"] = portfolio_summary.get("equity_usd")
+            portfolio_summary["cost_basis"] = portfolio_summary.get("cost_basis")
+            portfolio_summary["open_pnl"] = portfolio_summary.get("pnl_usd")
+            portfolio_summary["open_pnl_margin_pct"] = (
+                (portfolio_summary["open_pnl"] / portfolio_summary["cost_basis"]) * 100.0
+            ).where(portfolio_summary.get("cost_basis") > 0)
+            # Provide market cap tier for display
+            portfolio_summary["market_cap_tier"] = portfolio_summary.get("market_cap").apply(_market_cap_tier)
     except Exception as exc:
         st.error(f"Unable to load holdings and market data: {exc}")
         st.stop()
@@ -397,7 +413,7 @@ def main() -> None:
     except Exception:
         LOGGER.exception("preparing market snapshot cache rows failed; continuing")
 
-    tickers = sorted({str(item).upper().strip() for item in active_holdings.get("ticker", pd.Series(dtype=str)).tolist()})
+    tickers = sorted({str(item).upper().strip() for item in portfolio_summary.get("ticker", pd.Series(dtype=str)).tolist()})
 
     tab1, tab2, tab3, tab4 = st.tabs(["📊 Portfolio Summary", "📉 AI Reverse DCF", "📋 AI Transcript Mosaic", "📜 Investment Thesis"])
 
@@ -586,12 +602,7 @@ def main() -> None:
                 portfolio_weight_pct = (current_value / total_portfolio_value * 100.0) if total_portfolio_value > 0 else 0.0
 
                 st.markdown(
-                    f"**Shares:** {shares}  
-**Avg Cost:** ${avg_cost:,.2f}  
-**Live Price:** {'N/A' if live_price is None else f'${live_price:,.2f}'}  
-**Current Value:** ${current_value:,.2f}  
-**Total Portfolio Value:** ${total_portfolio_value:,.2f}  
-**Portfolio Weight:** {portfolio_weight_pct:.2f}%"
+                    f"**Shares:** {shares}  \n**Avg Cost:** ${avg_cost:,.2f}  \n**Live Price:** {'N/A' if live_price is None else f'${live_price:,.2f}'}  \n**Current Value:** ${current_value:,.2f}  \n**Total Portfolio Value:** ${total_portfolio_value:,.2f}  \n**Portfolio Weight:** {portfolio_weight_pct:.2f}%"
                 )
 
                 # Fetch fundamentals via yfinance
