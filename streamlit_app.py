@@ -605,6 +605,40 @@ def main() -> None:
                     f"**Shares:** {shares}  \n**Avg Cost:** ${avg_cost:,.2f}  \n**Live Price:** {'N/A' if live_price is None else f'${live_price:,.2f}'}  \n**Current Value:** ${current_value:,.2f}  \n**Total Portfolio Value:** ${total_portfolio_value:,.2f}  \n**Portfolio Weight:** {portfolio_weight_pct:.2f}%"
                 )
 
+                # Show cached AI artifacts (if any) for this ticker
+                try:
+                    cached_thesis = db.get_latest_ai_report(selected_ticker, "investment_thesis")
+                except Exception:
+                    cached_thesis = None
+
+                try:
+                    cached_dcf = db.get_latest_ai_report(selected_ticker, "reverse_dcf")
+                except Exception:
+                    cached_dcf = None
+
+                try:
+                    cached_mosaic = db.get_latest_ai_report(selected_ticker, "transcript_mosaic")
+                except Exception:
+                    cached_mosaic = None
+
+                try:
+                    latest_transcript = db.get_latest_transcript(selected_ticker)
+                except Exception:
+                    latest_transcript = None
+
+                if cached_thesis and cached_thesis.get("report_md"):
+                    st.subheader("Cached Investment Thesis")
+                    st.markdown(cached_thesis.get("report_md") or "")
+                if cached_dcf and cached_dcf.get("report_md"):
+                    st.subheader("Cached Reverse DCF")
+                    st.markdown(cached_dcf.get("report_md") or "")
+                if cached_mosaic and cached_mosaic.get("report_md"):
+                    st.subheader("Cached Transcript Mosaic")
+                    st.markdown(cached_mosaic.get("report_md") or "")
+                if latest_transcript and latest_transcript.get("content"):
+                    st.subheader("Latest Uploaded Transcript")
+                    st.text_area("Transcript (cached)", latest_transcript.get("content") or "", height=180)
+
                 # Fetch fundamentals via yfinance with retry/backoff; on rate-limit, fall back to market_service profile
                 fundamentals_missing: list[str] = []
                 trailing_pe = None

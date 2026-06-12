@@ -90,6 +90,8 @@ class PostgresStore:
             "ALTER TABLE public.portfolio_cache ENABLE ROW LEVEL SECURITY",
             "ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY",
             "ALTER TABLE public.sync_profile ENABLE ROW LEVEL SECURITY",
+            "CREATE TABLE IF NOT EXISTS public.ai_analysis_reports (\n                id SERIAL PRIMARY KEY,\n                ticker VARCHAR(32) NOT NULL,\n                analysis_type VARCHAR(64) NOT NULL,\n                model VARCHAR(128),\n                prompt_summary TEXT,\n                report_md TEXT,\n                inputs JSONB,\n                run_by VARCHAR(128),\n                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n                expires_at TIMESTAMPTZ\n            )",
+            "CREATE TABLE IF NOT EXISTS public.transcripts (\n                id SERIAL PRIMARY KEY,\n                ticker VARCHAR(32),\n                filename VARCHAR(255),\n                content TEXT NOT NULL,\n                source VARCHAR(64),\n                uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n            )",
         ]
 
         try:
@@ -783,6 +785,60 @@ class PostgresStore:
         except Exception as exc:
             LOGGER.exception("Insert AI analysis report failed: %s", exc)
             raise RuntimeError("Unable to insert AI analysis report") from exc
+
+    def get_latest_ai_report(self, ticker: str, analysis_type: str) -> dict[str, object] | None:
+        """Return the most recent AI analysis report row for a ticker and analysis_type, or None."""
+        row = self._fetch_one(
+            """
+            SELECT id, ticker, analysis_type, model, prompt_summary, report_md, inputs, run_by, created_at, expires_at
+            FROM public.ai_analysis_reports
+            WHERE ticker = :ticker AND analysis_type = :analysis_type
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            params={"ticker": str(ticker).upper().strip(), "analysis_type": analysis_type},
+        )
+        if row is None:
+            return None
+        try:
+            parsed_inputs = json.loads(str(row.get("inputs") or "{}"))
+        except Exception:
+            parsed_inputs = {}
+        return {
+            "id": row.get("id"),
+            "ticker": row.get("ticker"),
+            "analysis_type": row.get("analysis_type"),
+            "model": row.get("model"),
+            "prompt_summary": row.get("prompt_summary"),
+            "report_md": row.get("report_md"),
+            "inputs": parsed_inputs,
+            "run_by": row.get("run_by"),
+            "created_at": str(row.get("created_at")) if row.get("created_at") else None,
+            "expires_at": str(row.get("expires_at")) if row.get("expires_at") else None,
+        }
+
+    def get_latest_transcript(self, ticker: str) -> dict[str, object] | None:
+        """Return the most recent uploaded transcript for a ticker, or None."""
+        row = self._fetch_one(
+            """
+            SELECT id, ticker, filename, content, source, uploaded_at
+            FROM public.transcripts
+            WHERE ticker = :ticker
+            ORDER BY uploaded_at DESC
+            LIMIT 1
+            """,
+            params={"ticker": str(ticker).upper().strip()},
+        )
+        if row is None:
+            return None
+        return {
+            "id": row.get("id"),
+            "ticker": row.get("ticker"),
+            "filename": row.get("filename"),
+            "content": row.get("content"),
+            "source": row.get("source"),
+            "uploaded_at": str(row.get("uploaded_at")) if row.get("uploaded_at") else None,
+        }
 
     def insert_transcript(self, ticker: str | None, filename: str | None, content: str, source: str | None = None) -> str:
         """Insert an uploaded transcript and return the generated UUID as string."""

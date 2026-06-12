@@ -10,6 +10,9 @@ from typing import Iterable
 
 import pandas as pd
 import yfinance as yf
+import os
+import requests
+import time
 
 from .cache_store import CacheStore
 from .models import Quote, Snapshot
@@ -85,15 +88,87 @@ class MarketDataService:
                 "company_name": company_name or quote.company_name,
                 "currency": currency or quote.currency,
             }
-        except Exception:
-            # Some symbols return incomplete metadata (e.g., missing exchange timezone fields).
-            # Return a minimal profile so sync can continue and the ticker is still provisioned.
+        except Exception as primary_exc:
+            # Attempt to fall back to FinancialModelingPrep (if API key provided)
+            try:
+                fmp = self._fetch_company_profile_fmp(ticker)
+                if fmp:
+                    return {
+                        "price": fmp.get("price"),
+                        "market_cap": fmp.get("market_cap"),
+                        "company_name": fmp.get("company_name"),
+                        "currency": fmp.get("currency"),
+                    }
+            except Exception:
+                LOGGER.exception("FMP fallback failed for %s", ticker)
+
+            # Some symbols return incomplete metadata; return a minimal profile so sync can continue.
+            LOGGER.exception("Primary yfinance fetch failed for %s: %s", ticker, primary_exc)
             return {
                 "price": None,
                 "market_cap": None,
                 "company_name": None,
                 "currency": None,
             }
+
+    def _fetch_company_profile_fmp(self, ticker: str) -> dict[str, object] | None:
+        """Fetch basic profile and recent cash-flow/balance-sheet entries from FinancialModelingPrep.
+
+        Requires environment variable `FMP_API_KEY` or none will be attempted.
+        Returns a dict with keys: company_name, currency, price, market_cap, trailingPE, forwardPE,
+        operating_cash_flow, total_assets, total_debt when available.
+        """
+        api_key = os.environ.get("FMP_API_KEY") or os.environ.get("FMP_API")
+        if not api_key:
+            return None
+
+        base = "https://financialmodelingprep.com/api/v3"
+        out: dict[str, object] = {}
+        ticker_up = str(ticker or "").upper().strip()
+        try:
+            # Profile
+            resp = requests.get(f"{base}/profile/{ticker_up}", params={"apikey": api_key}, timeout=10)
+            if resp.ok:
+                data = resp.json()
+                if isinstance(data, list) and data:
+                    p = data[0]
+                    out["company_name"] = p.get("companyName")
+                    out["currency"] = p.get("currency")
+                    out["price"] = float(p.get("price")) if p.get("price") is not None else None
+                    out["market_cap"] = float(p.get("mktCap")) if p.get("mktCap") is not None else None
+                    out["trailingPE"] = float(p.get("pe")) if p.get("pe") not in (None, "") else None
+                    out["forwardPE"] = float(p.get("forwardPE")) if p.get("forwardPE") not in (None, "") else None
+
+            # Cash flow (most recent)
+            try:
+                resp_cf = requests.get(f"{base}/cash-flow-statement/{ticker_up}", params={"limit": 1, "apikey": api_key}, timeout=10)
+                if resp_cf.ok:
+                    cf = resp_cf.json()
+                    if isinstance(cf, list) and cf:
+                        latest = cf[0]
+                        # FMP uses different key names; try common ones
+                        ocf = latest.get("operatingCashFlow") or latest.get("Operating Cash Flow") or latest.get("netCashProvidedByOperatingActivities")
+                        out["operating_cash_flow"] = float(ocf) if ocf not in (None, "") else None
+            except Exception:
+                pass
+
+            # Balance sheet (most recent)
+            try:
+                resp_bs = requests.get(f"{base}/balance-sheet-statement/{ticker_up}", params={"limit": 1, "apikey": api_key}, timeout=10)
+                if resp_bs.ok:
+                    bs = resp_bs.json()
+                    if isinstance(bs, list) and bs:
+                        latest = bs[0]
+                        ta = latest.get("totalAssets") or latest.get("Total assets")
+                        td = latest.get("totalDebt") or latest.get("totalLiabilities") or latest.get("shortTermDebt")
+                        out["total_assets"] = float(ta) if ta not in (None, "") else None
+                        out["total_debt"] = float(td) if td not in (None, "") else None
+            except Exception:
+                pass
+
+            return out
+        except Exception:
+            return None
 
     def _fetch_fx_live_to_usd(self, currencies: Iterable[str]) -> dict[str, float]:
         fx: dict[str, float] = {"USD": 1.0}
