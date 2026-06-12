@@ -190,3 +190,111 @@ Output requirements:
             raise RuntimeError(f"Model '{model_name}' not available for generation. Available: {avail_text}") from exc
         raise
     return _response_text(response)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def generate_single_investment_thesis(ticker_symbol: str, allocation_details: dict, transcript_text: str) -> str:
+    """Generate a single-ticker institutional-style investment thesis.
+
+    This function expects `allocation_details` to include at minimum the keys:
+    'shares', 'avg_cost', 'current_value', 'portfolio_weight_pct'. Additional
+    financial entries (trailing_pe, forward_pe, operating_cash_flow, roic, wacc)
+    may be present and will be injected into the prompt if available.
+    """
+    symbol = str(ticker_symbol or "").upper().strip()
+    if not symbol:
+        raise RuntimeError("Ticker symbol is required for thesis generation.")
+
+    if not allocation_details or not isinstance(allocation_details, dict):
+        raise RuntimeError("Allocation details are required and must be a dict.")
+
+    # Ensure required allocation fields are present
+    required_keys = ("shares", "avg_cost", "current_value", "portfolio_weight_pct")
+    missing = [k for k in required_keys if k not in allocation_details]
+    if missing:
+        raise RuntimeError(f"Allocation details missing required keys: {', '.join(missing)}")
+
+    # Build a simple financial block if available
+    trailing_pe = allocation_details.get("trailing_pe")
+    forward_pe = allocation_details.get("forward_pe")
+    operating_cash_flow = allocation_details.get("operating_cash_flow")
+    roic = allocation_details.get("roic")
+    wacc = allocation_details.get("wacc")
+
+    financial_block_lines: list[str] = []
+    financial_block_lines.append(f"- Trailing P/E: {trailing_pe if trailing_pe is not None else 'N/A'}")
+    financial_block_lines.append(f"- Forward P/E: {forward_pe if forward_pe is not None else 'N/A'}")
+    financial_block_lines.append(f"- Operating Cash Flow: {operating_cash_flow if operating_cash_flow is not None else 'N/A'}")
+    financial_block_lines.append(f"- ROIC (est): {roic if roic is not None else 'N/A'}")
+    financial_block_lines.append(f"- WACC (est): {wacc if wacc is not None else 'N/A'}")
+    financial_block = "\n".join(financial_block_lines)
+
+    prompt = f"""Act as a world-class institutional value investor, equity research analyst, and expert capital allocator. You are reviewing a target stock that is already an active position in the user's portfolio.
+
+Consider the user's current allocation footprint for this specific stock when delivering your final risk assessment:
+### USER'S CURRENT ALLOCATION DETAIL:
+- Shares Owned: {allocation_details['shares']}
+- Average Cost Basis: ${allocation_details['avg_cost']:.2f}
+- Current Market Value of Position: ${allocation_details['current_value']:.2f}
+- Allocation Weighting in Total Portfolio: {allocation_details['portfolio_weight_pct']:.2f}%
+
+Provide the following raw fundamental data for the company for context (if available):
+{financial_block}
+
+Analyze the provided raw fundamental data and transcript for the target company, synthesize the investment thesis, evaluate the management's capital discipline, and deliver a clear, actionable investment decision ("Buy", "Hold", "Watchlist", or "Avoid").
+
+Structure your analysis into the following distinct sections:
+
+### 1. Executive Summary & Thesis
+* Provide a concise 2-3 sentence overview of the business model and the core investment thesis.
+* Outline the primary near-term and long-term structural drivers (the "Flywheel" or "Moat") that sustain this business.
+
+### 2. Ecosystem Interdependency & Segment Flywheels
+* Map the synergy between business units. Does the company possess a core, high-volume segment that serves as a low-cost customer acquisition engine for a secondary, hyper-profitable, or high-ROIC segment?
+* If a credit, financing, or lending book is integrated into the business model, explicitly conduct a risk audit on asset quality, non-performing loans (NPLs), and underwriting discipline.
+
+### 3. Financial Health & Valuation Drilldown
+* Analyze the valuation using multiple lenses: current Trailing P/E vs. Forward P/E based on forward guidance. Is the multiple contraction justified, or does it offer a compelling "margin of safety"?
+* Evaluate the company's Return on Invested Capital (ROIC) relative to its Weighted Average Cost of Capital (WACC). Is the "Economic Spread" (ROIC - WACC) expanding or shrinking? Explicitly analyze whether the company is compounding value or destroying/diluting it.
+
+### 4. Capital Allocation Mastery Checklist
+Evaluate the management team's track record using a strict "Outsiders-style" prioritization framework. Determine if they act as "growth compounders" or value destroyers:
+* **Internal Reinvestment:** Are they plowing FCF into high-ROIC projects? Or are they chasing low-margin top-line revenue?
+* **Share Buybacks & Dividends:** If the stock is overvalued, are they destroying capital via buybacks? If the stock is undervalued, are they aggressively reducing share count to boost intrinsic value per share?
+* **M&A vs. Organic Growth:** Do they favor disciplined internal development, or are they wasting cash on dilutive acquisitions?
+* **Insider Alignment:** Detail executive skin-in-game (e.g., percentage of company stock held by the CEO/insiders).
+
+### 5. Near-Term & Long-Term Bear Case (The Draconian Scenarios)
+Identify the structural catalysts that could kill the thesis. Specifically look for:
+* **Margin Traps:** Is margin compression a temporary strategic choice or a permanent baseline shift caused by intense competition?
+* **Terminal Value Concerns / Moat Erosion:** Are competitors gaining ground?
+* **Regulatory/Macro Risks:** Detail regulatory, antitrust, or structural industry changes that pose ever-present risks.
+
+### 6. Multi-Year Valuation Scenarios & Expected Returns
+Map out three clear return profiles based on a 3-to-4-year forward horizon:
+* **Bullish/Optimistic Case:** Revenue growth range, margin targets, fair exit multiple, and expected annualized return.
+* **Base/Moderate Case:** Slower but stable growth, standard multiple, and annualized return.
+* **Draconian/Bear Case:** Fading moat, contracting exit multiple, and worst-case annualized return.
+
+### 7. Final Investment Verdict & Monitor Dashboard
+* **The Decision:** Give a definitive verdict: Buy, Hold, Watchlist, or Avoid. **Directly address whether the user's current allocation weight ({allocation_details['portfolio_weight_pct']:.2f}%) is appropriate, over-indexed, or under-indexed given the asset's risk profile.**
+* **The Dashboard Triggers:** Provide 3 distinct key operational metrics that an investor must track quarter-over-quarter to ensure the thesis remains intact.
+
+Additional context (transcript):
+{transcript_text}
+""".strip()
+
+    client = _gemini_client()
+    try:
+        response = client.models.generate_content(model="gemini-3.5-flash", contents=prompt)
+    except Exception as exc:
+        msg = str(exc).lower()
+        try:
+            available = [m.name for m in client.models.list()]
+        except Exception:
+            available = None
+        if "404" in msg or "not found" in msg:
+            avail_text = ", ".join(available) if available else "(could not list models)"
+            raise RuntimeError(f"Model 'gemini-3.5-flash' not available for generation. Available: {avail_text}") from exc
+        raise
+    return _response_text(response)

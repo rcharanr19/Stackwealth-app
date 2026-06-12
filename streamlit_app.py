@@ -17,7 +17,12 @@ from alphavault.postgres_store import PostgresStore
 from alphavault.logging_utils import configure_logging
 from alphavault.market_data import MarketDataService
 from alphavault.robinhood_sync import RobinhoodSyncService
-from tabs.ai_analysis import get_reverse_dcf_analysis, get_transcript_mosaic_analysis, get_model_name
+from tabs.ai_analysis import (
+    get_reverse_dcf_analysis,
+    get_transcript_mosaic_analysis,
+    get_model_name,
+    generate_single_investment_thesis,
+)
 
 
 configure_logging()
@@ -394,7 +399,7 @@ def main() -> None:
 
     tickers = sorted({str(item).upper().strip() for item in active_holdings.get("ticker", pd.Series(dtype=str)).tolist()})
 
-    tab1, tab2, tab3 = st.tabs(["📊 Portfolio Summary", "📉 AI Reverse DCF", "📋 AI Transcript Mosaic"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📊 Portfolio Summary", "📉 AI Reverse DCF", "📋 AI Transcript Mosaic", "📜 Investment Thesis"])
 
     with tab1:
         st.subheader("Portfolio Summary")
@@ -552,6 +557,140 @@ def main() -> None:
                         LOGGER.exception("Failed to persist transcript mosaic report; continuing.")
             except Exception as exc:
                 st.error(f"Transcript mosaic analysis failed: {exc}")
+
+    with tab4:
+        st.subheader("Investment Thesis")
+
+        if portfolio_summary.empty:
+            st.error("No active holdings found in Supabase yet. Cannot generate thesis.")
+        else:
+            tickers = sorted({str(item).upper().strip() for item in portfolio_summary.get("ticker", pd.Series(dtype=str)).tolist()})
+            selected_ticker = st.selectbox("Select ticker", options=tickers, key="thesis_ticker")
+
+            # Compute allocation details before running AI
+            row = None
+            try:
+                if not portfolio_summary.empty and selected_ticker in portfolio_summary["ticker"].values:
+                    row = portfolio_summary[portfolio_summary["ticker"] == selected_ticker].iloc[0]
+            except Exception:
+                row = None
+
+            if row is None:
+                st.error("Selected ticker not found in portfolio summary.")
+            else:
+                shares = float(row.get("shares") or 0.0)
+                avg_cost = float(row.get("avg_cost") or 0.0)
+                live_price = _safe_float(row.get("current_price"))
+                current_value = float(row.get("current_value") or 0.0)
+                total_portfolio_value = float(portfolio_summary["current_value"].sum(skipna=True)) if "current_value" in portfolio_summary else 0.0
+                portfolio_weight_pct = (current_value / total_portfolio_value * 100.0) if total_portfolio_value > 0 else 0.0
+
+                st.markdown(
+                    f"**Shares:** {shares}  
+**Avg Cost:** ${avg_cost:,.2f}  
+**Live Price:** {'N/A' if live_price is None else f'${live_price:,.2f}'}  
+**Current Value:** ${current_value:,.2f}  
+**Total Portfolio Value:** ${total_portfolio_value:,.2f}  
+**Portfolio Weight:** {portfolio_weight_pct:.2f}%"
+                )
+
+                # Fetch fundamentals via yfinance
+                fundamentals_missing: list[str] = []
+                try:
+                    instrument = yf.Ticker(selected_ticker)
+                    info = instrument.info or {}
+                    trailing_pe = _safe_float(info.get("trailingPE"))
+                    forward_pe = _safe_float(info.get("forwardPE"))
+                    cashflow_df = getattr(instrument, "cashflow", None)
+                    operating_cash_flow = None
+                    if cashflow_df is not None and not cashflow_df.empty:
+                        try:
+                            # take the most recent column
+                            operating_cash_flow = _safe_float(cashflow_df.loc["Operating Cash Flow"].tolist()[0]) if "Operating Cash Flow" in cashflow_df.index else None
+                        except Exception:
+                            operating_cash_flow = None
+
+                    balance = getattr(instrument, "balance_sheet", None)
+                    total_assets = None
+                    total_debt = _safe_float(info.get("totalDebt")) or None
+                    if balance is not None and not balance.empty:
+                        total_assets = _safe_float(balance.loc["Total Assets"].tolist()[0]) if "Total Assets" in balance.index else None
+                        # attempt to find short/long term debt
+                        if total_debt is None:
+                            for cand in ("Long Term Debt", "LongTermDebt", "totalDebt"):
+                                try:
+                                    if cand in balance.index:
+                                        total_debt = _safe_float(balance.loc[cand].tolist()[0])
+                                        break
+                                except Exception:
+                                    continue
+
+                    # Simple ROIC/WACC estimates (best-effort)
+                    roic = None
+                    wacc = None
+                    if operating_cash_flow is not None and total_assets is not None and total_debt is not None:
+                        invested_capital = (total_assets - total_debt) if (total_assets is not None and total_debt is not None) else None
+                        if invested_capital and invested_capital != 0:
+                            roic = (operating_cash_flow / invested_capital) * 100.0
+
+                    # mark missing fields for user visibility
+                    if trailing_pe is None:
+                        fundamentals_missing.append("trailing P/E")
+                    if forward_pe is None:
+                        fundamentals_missing.append("forward P/E")
+                    if operating_cash_flow is None:
+                        fundamentals_missing.append("operating cash flow")
+
+                except Exception as exc:
+                    st.error(f"Failed to fetch fundamentals for {selected_ticker}: {exc}")
+                    trailing_pe = forward_pe = operating_cash_flow = roic = wacc = None
+
+                if fundamentals_missing:
+                    st.error(f"Missing fundamentals: {', '.join(fundamentals_missing)}. Thesis will proceed but results may be incomplete.")
+
+                transcript_file = st.file_uploader("Upload supporting transcript (.txt)", type=["txt"], key="thesis_transcript")
+                transcript_text = ""
+                if transcript_file is not None:
+                    try:
+                        transcript_text = transcript_file.getvalue().decode("utf-8", errors="ignore")
+                    except Exception:
+                        transcript_text = ""
+
+                allocation_details = {
+                    "shares": shares,
+                    "avg_cost": avg_cost,
+                    "current_value": current_value,
+                    "portfolio_weight_pct": portfolio_weight_pct,
+                    "live_price": live_price,
+                    "trailing_pe": trailing_pe,
+                    "forward_pe": forward_pe,
+                    "operating_cash_flow": operating_cash_flow,
+                    "roic": roic,
+                    "wacc": wacc,
+                }
+
+                if st.button("Generate Institutional Thesis Report", key="gen_thesis", width="stretch"):
+                    try:
+                        with st.spinner("Generating investment thesis..."):
+                            report = generate_single_investment_thesis(selected_ticker, allocation_details, transcript_text)
+                        st.markdown(report)
+
+                        # persist AI report (best-effort)
+                        try:
+                            inputs = {"ticker": selected_ticker, "allocation": allocation_details}
+                            db.insert_ai_analysis_report(
+                                ticker=selected_ticker,
+                                analysis_type="investment_thesis",
+                                model=get_model_name(),
+                                prompt_summary=None,
+                                report_md=report,
+                                inputs=inputs,
+                                run_by=None,
+                            )
+                        except Exception:
+                            LOGGER.exception("Failed to persist investment thesis report; continuing.")
+                    except Exception as exc:
+                        st.error(f"Investment thesis generation failed: {exc}")
 
 
 if __name__ == "__main__":
