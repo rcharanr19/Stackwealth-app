@@ -19,6 +19,20 @@ EPSILON = 0.0001
 class PostgresStore:
     def __init__(self, connection: Any) -> None:
         self.connection = connection
+        self._db_name = self._resolve_db_name(connection)
+        LOGGER.info("PostgresStore connected to database=%s", self._db_name)
+
+    @staticmethod
+    def _resolve_db_name(connection: Any) -> str:
+        candidates = [
+            getattr(getattr(connection, "engine", None), "url", None),
+            getattr(connection, "url", None),
+        ]
+        for candidate in candidates:
+            db_name = getattr(candidate, "database", None)
+            if db_name:
+                return str(db_name)
+        return "unknown"
 
     @staticmethod
     def _normalize_tickers(tickers: list[str] | set[str]) -> list[str]:
@@ -758,6 +772,15 @@ class PostgresStore:
     ) -> str:
         """Insert a new AI analysis report and return the generated UUID as string."""
         payload = json.dumps(inputs or {}, separators=(",", ":"))
+        table_name = "public.ai_analysis_reports"
+        LOGGER.info(
+            "Inserting AI analysis report into %s: db=%s ticker=%s analysis_type=%s model=%s",
+            table_name,
+            self._db_name,
+            ticker,
+            analysis_type,
+            model,
+        )
         try:
             with self.connection.session as session:
                 result = session.execute(
@@ -781,9 +804,25 @@ class PostgresStore:
                 )
                 row = result.fetchone()
                 session.commit()
-                return str(row[0]) if row else ""
+                report_id = str(row[0]) if row else ""
+                LOGGER.info(
+                    "Inserted AI analysis report successfully: db=%s table=%s id=%s ticker=%s analysis_type=%s",
+                    self._db_name,
+                    table_name,
+                    report_id or "<missing>",
+                    ticker,
+                    analysis_type,
+                )
+                return report_id
         except Exception as exc:
-            LOGGER.exception("Insert AI analysis report failed: %s", exc)
+            LOGGER.exception(
+                "Insert AI analysis report failed: db=%s table=%s ticker=%s analysis_type=%s error=%s",
+                self._db_name,
+                table_name,
+                ticker,
+                analysis_type,
+                exc,
+            )
             # Attempt to repair common schema issues (missing table or varchar size limits)
             try:
                 # ensure tables exist

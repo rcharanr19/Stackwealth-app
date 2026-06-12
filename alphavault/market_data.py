@@ -144,13 +144,13 @@ class MarketDataService:
             LOGGER.debug("Skipping FMP profile fetch for %s because no API key is configured", ticker)
             return None
 
-        base = "https://financialmodelingprep.com/api/v3"
+        base = "https://financialmodelingprep.com/stable"
         out: dict[str, object] = {}
         ticker_up = str(ticker or "").upper().strip()
         LOGGER.debug("Fetching FMP profile for %s", ticker_up)
         try:
             # Profile
-            resp = requests.get(f"{base}/profile/{ticker_up}", params={"apikey": api_key}, timeout=10)
+            resp = requests.get(f"{base}/profile", params={"symbol": ticker_up, "apikey": api_key}, timeout=10)
             if resp.ok:
                 data = resp.json()
                 if isinstance(data, list) and data:
@@ -164,7 +164,7 @@ class MarketDataService:
 
             # Cash flow (most recent)
             try:
-                resp_cf = requests.get(f"{base}/cash-flow-statement/{ticker_up}", params={"limit": 1, "apikey": api_key}, timeout=10)
+                resp_cf = requests.get(f"{base}/cash-flow-statement", params={"symbol": ticker_up, "limit": 1, "apikey": api_key}, timeout=10)
                 if resp_cf.ok:
                     cf = resp_cf.json()
                     if isinstance(cf, list) and cf:
@@ -177,7 +177,7 @@ class MarketDataService:
 
             # Balance sheet (most recent)
             try:
-                resp_bs = requests.get(f"{base}/balance-sheet-statement/{ticker_up}", params={"limit": 1, "apikey": api_key}, timeout=10)
+                resp_bs = requests.get(f"{base}/balance-sheet-statement", params={"symbol": ticker_up, "limit": 1, "apikey": api_key}, timeout=10)
                 if resp_bs.ok:
                     bs = resp_bs.json()
                     if isinstance(bs, list) and bs:
