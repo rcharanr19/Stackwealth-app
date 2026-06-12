@@ -232,6 +232,7 @@ def generate_single_investment_thesis(ticker_symbol: str, allocation_details: di
     prompt = f"""Act as a world-class institutional value investor, equity research analyst, and expert capital allocator. You are reviewing a target stock that is already an active position in the user's portfolio.
 
 Consider the user's current allocation footprint for this specific stock when delivering your final risk assessment:
+Important: The target ticker for this assignment is {symbol}. Focus your entire analysis on {symbol} and its business. If the provided transcript discusses other tickers or companies, ignore those references and do not use them as the basis for your thesis.
 ### USER'S CURRENT ALLOCATION DETAIL:
 - Shares Owned: {allocation_details['shares']}
 - Average Cost Basis: ${allocation_details['avg_cost']:.2f}

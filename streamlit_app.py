@@ -605,34 +605,70 @@ def main() -> None:
                     f"**Shares:** {shares}  \n**Avg Cost:** ${avg_cost:,.2f}  \n**Live Price:** {'N/A' if live_price is None else f'${live_price:,.2f}'}  \n**Current Value:** ${current_value:,.2f}  \n**Total Portfolio Value:** ${total_portfolio_value:,.2f}  \n**Portfolio Weight:** {portfolio_weight_pct:.2f}%"
                 )
 
-                # Fetch fundamentals via yfinance
+                # Fetch fundamentals via yfinance with retry/backoff; on rate-limit, fall back to market_service profile
                 fundamentals_missing: list[str] = []
+                trailing_pe = None
+                forward_pe = None
+                operating_cash_flow = None
+                total_assets = None
+                total_debt = None
                 try:
-                    instrument = yf.Ticker(selected_ticker)
-                    info = instrument.info or {}
-                    trailing_pe = _safe_float(info.get("trailingPE"))
-                    forward_pe = _safe_float(info.get("forwardPE"))
-                    cashflow_df = getattr(instrument, "cashflow", None)
-                    operating_cash_flow = None
-                    if cashflow_df is not None and not cashflow_df.empty:
+                    max_attempts = 3
+                    delay = 1.0
+                    last_exc = None
+                    for attempt in range(1, max_attempts + 1):
                         try:
-                            # take the most recent column
-                            operating_cash_flow = _safe_float(cashflow_df.loc["Operating Cash Flow"].tolist()[0]) if "Operating Cash Flow" in cashflow_df.index else None
-                        except Exception:
-                            operating_cash_flow = None
-
-                    balance = getattr(instrument, "balance_sheet", None)
-                    total_assets = None
-                    total_debt = _safe_float(info.get("totalDebt")) or None
-                    if balance is not None and not balance.empty:
-                        total_assets = _safe_float(balance.loc["Total Assets"].tolist()[0]) if "Total Assets" in balance.index else None
-                        # attempt to find short/long term debt
-                        if total_debt is None:
-                            for cand in ("Long Term Debt", "LongTermDebt", "totalDebt"):
+                            instrument = yf.Ticker(selected_ticker)
+                            info = instrument.info or {}
+                            trailing_pe = _safe_float(info.get("trailingPE"))
+                            forward_pe = _safe_float(info.get("forwardPE"))
+                            cashflow_df = getattr(instrument, "cashflow", None)
+                            if cashflow_df is not None and not cashflow_df.empty:
                                 try:
-                                    if cand in balance.index:
-                                        total_debt = _safe_float(balance.loc[cand].tolist()[0])
-                                        break
+                                    operating_cash_flow = _safe_float(cashflow_df.loc["Operating Cash Flow"].tolist()[0]) if "Operating Cash Flow" in cashflow_df.index else None
+                                except Exception:
+                                    operating_cash_flow = None
+
+                            balance = getattr(instrument, "balance_sheet", None)
+                            total_debt = _safe_float(info.get("totalDebt")) or None
+                            if balance is not None and not balance.empty:
+                                total_assets = _safe_float(balance.loc["Total Assets"].tolist()[0]) if "Total Assets" in balance.index else None
+                                if total_debt is None:
+                                    for cand in ("Long Term Debt", "LongTermDebt", "totalDebt"):
+                                        try:
+                                            if cand in balance.index:
+                                                total_debt = _safe_float(balance.loc[cand].tolist()[0])
+                                                break
+                                        except Exception:
+                                            continue
+                            # success - break retry loop
+                            last_exc = None
+                            break
+                        except Exception as exc:
+                            last_exc = exc
+                            msg = str(exc).lower()
+                            # if rate limited, wait and retry a few times
+                            if "too many requests" in msg or "rate limit" in msg or "429" in msg:
+                                import time
+
+                                time.sleep(delay)
+                                delay *= 2
+                                continue
+                            # other errors - don't retry
+                            break
+                    if last_exc is not None and ("too many requests" in str(last_exc).lower() or "rate limit" in str(last_exc).lower()):
+                        # fallback to market service cached profile
+                        try:
+                            prof = market_service.fetch_asset_profile(selected_ticker)
+                            # we may not have PE or cashflow, but we can at least populate price/company/currency
+                            if prof.get("company_name"):
+                                # attach minimal info into `info` for downstream use
+                                info = {"longName": prof.get("company_name"), "currency": prof.get("currency"), "currentPrice": prof.get("price")}
+                                trailing_pe = trailing_pe or None
+                        except Exception:
+                            LOGGER.exception("fallback market_service.fetch_asset_profile failed")
+                except Exception:
+                    LOGGER.exception("Failed to fetch fundamentals via yfinance; continuing with best-effort data")
                                 except Exception:
                                     continue
 
