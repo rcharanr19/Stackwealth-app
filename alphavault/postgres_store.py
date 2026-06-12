@@ -784,7 +784,68 @@ class PostgresStore:
                 return str(row[0]) if row else ""
         except Exception as exc:
             LOGGER.exception("Insert AI analysis report failed: %s", exc)
-            raise RuntimeError("Unable to insert AI analysis report") from exc
+            # Attempt to repair common schema issues (missing table or varchar size limits)
+            try:
+                # ensure tables exist
+                try:
+                    self.ensure_schema()
+                except Exception:
+                    LOGGER.exception("ensure_schema failed while repairing ai_analysis_reports")
+
+                # Try to ALTER columns to TEXT in case they are too small
+                try:
+                    with self.connection.session as session:
+                        session.execute(text("ALTER TABLE public.ai_analysis_reports ALTER COLUMN report_md TYPE TEXT"))
+                        session.execute(text("ALTER TABLE public.ai_analysis_reports ALTER COLUMN prompt_summary TYPE TEXT"))
+                        session.commit()
+                except Exception:
+                    LOGGER.exception("Altering ai_analysis_reports columns to TEXT failed or not needed")
+
+                # Retry the insert once
+                try:
+                    with self.connection.session as session:
+                        result = session.execute(
+                            text("""
+                            INSERT INTO public.ai_analysis_reports
+                            (ticker, analysis_type, model, prompt_summary, report_md, inputs, run_by, created_at, expires_at)
+                            VALUES (:ticker, :analysis_type, :model, :prompt_summary, :report_md, :inputs::jsonb, :run_by, :created_at, :expires_at)
+                            RETURNING id
+                            """),
+                            {
+                                "ticker": ticker,
+                                "analysis_type": analysis_type,
+                                "model": model,
+                                "prompt_summary": prompt_summary,
+                                "report_md": report_md,
+                                "inputs": payload,
+                                "run_by": run_by,
+                                "created_at": datetime.utcnow().isoformat(),
+                                "expires_at": expires_at,
+                            },
+                        )
+                        row = result.fetchone()
+                        session.commit()
+                        return str(row[0]) if row else ""
+                except Exception as exc2:
+                    LOGGER.exception("Retry insert after schema repair failed: %s", exc2)
+
+            except Exception:
+                LOGGER.exception("Unexpected error while attempting to repair ai_analysis_reports schema")
+
+            # Final fallback: persist the report to a local file so the generated content is not lost
+            try:
+                cache_dir = Path("cache") / "ai_reports"
+                cache_dir.mkdir(parents=True, exist_ok=True)
+                ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+                safe_ticker = str(ticker).upper().strip()
+                fname = cache_dir / f"{safe_ticker}-{analysis_type}-{ts}.md"
+                content = (report_md or "")
+                fname.write_text(content, encoding="utf-8")
+                LOGGER.warning("Persisted AI report to local file due to DB failure: %s", str(fname))
+                return str(fname)
+            except Exception as exc3:
+                LOGGER.exception("Failed to persist AI report to local file: %s", exc3)
+                raise RuntimeError("Unable to insert AI analysis report and fallback persistence failed") from exc3
 
     def get_latest_ai_report(self, ticker: str, analysis_type: str) -> dict[str, object] | None:
         """Return the most recent AI analysis report row for a ticker and analysis_type, or None."""

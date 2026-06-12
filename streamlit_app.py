@@ -100,6 +100,15 @@ def _fmt_currency_2(value: Any) -> Any:
     return f"${float(value):,.2f}"
 
 
+def _fmt_iso_ts(ts: str | None) -> str | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts)).strftime("%Y-%m-%d %H:%M:%S UTC")
+    except Exception:
+        return str(ts)
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_market_snapshot(tickers: tuple[str, ...]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
@@ -627,16 +636,24 @@ def main() -> None:
                     latest_transcript = None
 
                 if cached_thesis and cached_thesis.get("report_md"):
-                    st.subheader("Cached Investment Thesis")
+                    ts = _fmt_iso_ts(cached_thesis.get("created_at"))
+                    title = "Cached Investment Thesis" + (f" — Generated {ts}" if ts else "")
+                    st.subheader(title)
                     st.markdown(cached_thesis.get("report_md") or "")
                 if cached_dcf and cached_dcf.get("report_md"):
-                    st.subheader("Cached Reverse DCF")
+                    ts = _fmt_iso_ts(cached_dcf.get("created_at"))
+                    title = "Cached Reverse DCF" + (f" — Generated {ts}" if ts else "")
+                    st.subheader(title)
                     st.markdown(cached_dcf.get("report_md") or "")
                 if cached_mosaic and cached_mosaic.get("report_md"):
-                    st.subheader("Cached Transcript Mosaic")
+                    ts = _fmt_iso_ts(cached_mosaic.get("created_at"))
+                    title = "Cached Transcript Mosaic" + (f" — Generated {ts}" if ts else "")
+                    st.subheader(title)
                     st.markdown(cached_mosaic.get("report_md") or "")
                 if latest_transcript and latest_transcript.get("content"):
-                    st.subheader("Latest Uploaded Transcript")
+                    ts = _fmt_iso_ts(latest_transcript.get("uploaded_at"))
+                    title = "Latest Uploaded Transcript" + (f" — Uploaded {ts}" if ts else "")
+                    st.subheader(title)
                     st.text_area("Transcript (cached)", latest_transcript.get("content") or "", height=180)
 
                 # Fetch fundamentals via yfinance with retry/backoff; on rate-limit, fall back to market_service profile
