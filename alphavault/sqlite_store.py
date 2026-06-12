@@ -546,7 +546,7 @@ class SQLiteStore:
         normalized = self._normalize_tickers(tickers)
         payload = json.dumps(normalized, separators=(",", ":"))
         now = datetime.utcnow().isoformat()
-            LOGGER.debug("Replacing tracked ticker set with %d tickers", len(normalized))
+        LOGGER.debug("Replacing tracked ticker set with %d tickers", len(normalized))
         with self._connect() as conn:
             self._ensure_sync_profile_schema(conn)
             conn.execute(
