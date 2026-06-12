@@ -143,9 +143,9 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
     LOGGER.debug("Starting FMP financial profile fetch for %s", symbol)
 
     endpoints = {
-        "income_statement": f"https://financialmodelingprep.com/api/v3/income-statement/{symbol}?limit=5&apikey={api_key}",
-        "balance_sheet": f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{symbol}?limit=5&apikey={api_key}",
-        "cash_flow": f"https://financialmodelingprep.com/api/v3/cash-flow-statement/{symbol}?limit=5&apikey={api_key}",
+        "income_statement": f"https://financialmodelingprep.com/stable/income-statement?symbol={symbol}&limit=5&apikey={api_key}",
+        "balance_sheet": f"https://financialmodelingprep.com/stable/balance-sheet-statement?symbol={symbol}&limit=5&apikey={api_key}",
+        "cash_flow": f"https://financialmodelingprep.com/stable/cash-flow-statement?symbol={symbol}&limit=5&apikey={api_key}",
     }
 
     def _fetch_one(name: str, url: str) -> tuple[str, list[dict[str, Any]]]:
@@ -158,8 +158,22 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
             response.status_code,
         )
         if response.status_code in (401, 403):
-            raise RuntimeError(f"FMP API key appears invalid or unauthorized for {name} ({response.status_code}).")
+            LOGGER.warning(
+                "FMP endpoint %s for %s returned %s; body=%s",
+                name,
+                symbol,
+                response.status_code,
+                response.text[:500],
+            )
+            raise RuntimeError(f"FMP endpoint '{name}' returned HTTP {response.status_code} for {symbol}; check endpoint version, plan, and key.")
         if response.status_code != 200:
+            LOGGER.warning(
+                "FMP endpoint %s for %s returned unexpected HTTP %s; body=%s",
+                name,
+                symbol,
+                response.status_code,
+                response.text[:500],
+            )
             raise RuntimeError(f"FMP endpoint '{name}' failed with HTTP {response.status_code} for {symbol}.")
         payload = response.json()
         if not isinstance(payload, list) or len(payload) == 0:
