@@ -439,8 +439,8 @@ def main() -> None:
 
             kpi1, kpi2, kpi3 = st.columns(3)
             kpi1.metric("Current Value", f"${total_value:,.2f}")
-            kpi2.metric("Open P&L", f"${total_open_pnl:,.2f}")
-            kpi3.metric("Open P&L Margin", "N/A" if pnl_margin is None else f"{pnl_margin:+.2f}%")
+            kpi2.metric("Total P&L", f"${total_open_pnl:,.2f}")
+            kpi3.metric("Total P&L Margin", "N/A" if pnl_margin is None else f"{pnl_margin:+.2f}%")
 
             display = portfolio_summary[
                 [
@@ -454,7 +454,7 @@ def main() -> None:
                     "open_pnl",
                     "open_pnl_margin_pct",
                     "weight_pct",
-                    "market_cap_tier",
+                    "last_day_change_pct",
                 ]
             ].rename(
                 columns={
@@ -465,10 +465,10 @@ def main() -> None:
                     "cost_basis": "Cost Basis",
                     "current_price": "Current Price",
                     "current_value": "Current Value",
-                    "open_pnl": "Open P&L",
-                    "open_pnl_margin_pct": "Open P&L Margin %",
+                    "open_pnl": "Total P&L",
+                    "open_pnl_margin_pct": "Total P&L Margin %",
                     "weight_pct": "Weight %",
-                    "market_cap_tier": "Market Cap Tier",
+                    "last_day_change_pct": "Day Change %",
                 }
             )
 
@@ -479,13 +479,14 @@ def main() -> None:
                     "Cost Basis": _fmt_currency_2,
                     "Current Price": _fmt_currency_2,
                     "Current Value": _fmt_currency_2,
-                    "Open P&L": _fmt_currency_2,
-                    "Open P&L Margin %": "{:+.2f}%",
+                    "Total P&L": _fmt_currency_2,
+                    "Total P&L Margin %": "{:+.2f}%",
                     "Weight %": "{:.2f}%",
+                    "Day Change %": "{:+.2f}%",
                 }
             )
 
-            styled = styler.map(style_signed_value, subset=["Open P&L", "Open P&L Margin %"])
+            styled = styler.map(style_signed_value, subset=["Total P&L", "Total P&L Margin %", "Day Change %"])
             st.dataframe(styled, width="stretch")
 
         st.subheader("Status")
