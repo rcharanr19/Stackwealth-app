@@ -21,7 +21,8 @@ from tabs.ai_analysis import (
     get_reverse_dcf_analysis,
     get_transcript_mosaic_analysis,
     get_model_name,
-    generate_single_investment_thesis,
+    fetch_fmp_financial_profile,
+    generate_comparative_investment_thesis,
 )
 
 
@@ -605,14 +606,15 @@ def main() -> None:
             else:
                 shares = float(row.get("shares") or 0.0)
                 avg_cost = float(row.get("avg_cost") or 0.0)
-                live_price = _safe_float(row.get("current_price"))
                 current_value = float(row.get("current_value") or 0.0)
                 total_portfolio_value = float(portfolio_summary["current_value"].sum(skipna=True)) if "current_value" in portfolio_summary else 0.0
                 portfolio_weight_pct = (current_value / total_portfolio_value * 100.0) if total_portfolio_value > 0 else 0.0
 
-                st.markdown(
-                    f"**Shares:** {shares}  \n**Avg Cost:** ${avg_cost:,.2f}  \n**Live Price:** {'N/A' if live_price is None else f'${live_price:,.2f}'}  \n**Current Value:** ${current_value:,.2f}  \n**Total Portfolio Value:** ${total_portfolio_value:,.2f}  \n**Portfolio Weight:** {portfolio_weight_pct:.2f}%"
-                )
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Shares", f"{shares:,.4f}")
+                c2.metric("Avg Cost Basis", f"${avg_cost:,.2f}")
+                c3.metric("Current Value", f"${current_value:,.2f}")
+                c4.metric("Portfolio Weight", f"{portfolio_weight_pct:.2f}%")
 
                 # Show cached AI artifacts (if any) for this ticker
                 try:
@@ -656,121 +658,62 @@ def main() -> None:
                     st.subheader(title)
                     st.text_area("Transcript (cached)", latest_transcript.get("content") or "", height=180)
 
-                # Fetch fundamentals via yfinance with retry/backoff; on rate-limit, fall back to market_service profile
-                fundamentals_missing: list[str] = []
-                trailing_pe = None
-                forward_pe = None
-                operating_cash_flow = None
-                total_assets = None
-                total_debt = None
-                try:
-                    max_attempts = 3
-                    delay = 1.0
-                    last_exc = None
-                    for attempt in range(1, max_attempts + 1):
-                        try:
-                            instrument = yf.Ticker(selected_ticker)
-                            info = instrument.info or {}
-                            trailing_pe = _safe_float(info.get("trailingPE"))
-                            forward_pe = _safe_float(info.get("forwardPE"))
-                            cashflow_df = getattr(instrument, "cashflow", None)
-                            if cashflow_df is not None and not cashflow_df.empty:
-                                try:
-                                    operating_cash_flow = _safe_float(cashflow_df.loc["Operating Cash Flow"].tolist()[0]) if "Operating Cash Flow" in cashflow_df.index else None
-                                except Exception:
-                                    operating_cash_flow = None
+                past_transcript_file = st.file_uploader(
+                    "Upload Baseline/Past Transcript (e.g., 1-2 Years Ago)",
+                    type=["txt"],
+                    key="past_tx",
+                )
+                current_transcript_file = st.file_uploader(
+                    "Upload Current/Latest Transcript",
+                    type=["txt"],
+                    key="current_tx",
+                )
 
-                            balance = getattr(instrument, "balance_sheet", None)
-                            total_debt = _safe_float(info.get("totalDebt")) or None
-                            if balance is not None and not balance.empty:
-                                total_assets = _safe_float(balance.loc["Total Assets"].tolist()[0]) if "Total Assets" in balance.index else None
-                                if total_debt is None:
-                                    for cand in ("Long Term Debt", "LongTermDebt", "totalDebt"):
-                                        try:
-                                            if cand in balance.index:
-                                                total_debt = _safe_float(balance.loc[cand].tolist()[0])
-                                                break
-                                        except Exception:
-                                            continue
-                            # success - break retry loop
-                            last_exc = None
-                            break
-                        except Exception as exc:
-                            last_exc = exc
-                            msg = str(exc).lower()
-                            # if rate limited, wait and retry a few times
-                            if "too many requests" in msg or "rate limit" in msg or "429" in msg:
-                                import time
-
-                                time.sleep(delay)
-                                delay *= 2
-                                continue
-                            # other errors - don't retry
-                            break
-                    if last_exc is not None and ("too many requests" in str(last_exc).lower() or "rate limit" in str(last_exc).lower()):
-                        # fallback to market service cached profile
-                        try:
-                            prof = market_service.fetch_asset_profile(selected_ticker)
-                            # we may not have PE or cashflow, but we can at least populate price/company/currency
-                            if prof.get("company_name"):
-                                # attach minimal info into `info` for downstream use
-                                info = {"longName": prof.get("company_name"), "currency": prof.get("currency"), "currentPrice": prof.get("price")}
-                                trailing_pe = trailing_pe or None
-                        except Exception:
-                            LOGGER.exception("fallback market_service.fetch_asset_profile failed")
-                    # Simple ROIC/WACC estimates (best-effort)
-                    roic = None
-                    wacc = None
-                    if operating_cash_flow is not None and total_assets is not None and total_debt is not None:
-                        invested_capital = (total_assets - total_debt) if (total_assets is not None and total_debt is not None) else None
-                        if invested_capital and invested_capital != 0:
-                            roic = (operating_cash_flow / invested_capital) * 100.0
-
-                    # mark missing fields for user visibility
-                    if trailing_pe is None:
-                        fundamentals_missing.append("trailing P/E")
-                    if forward_pe is None:
-                        fundamentals_missing.append("forward P/E")
-                    if operating_cash_flow is None:
-                        fundamentals_missing.append("operating cash flow")
-
-                except Exception as exc:
-                    st.error(f"Failed to fetch fundamentals for {selected_ticker}: {exc}")
-                    trailing_pe = forward_pe = operating_cash_flow = roic = wacc = None
-
-                if fundamentals_missing:
-                    st.error(f"Missing fundamentals: {', '.join(fundamentals_missing)}. Thesis will proceed but results may be incomplete.")
-
-                transcript_file = st.file_uploader("Upload supporting transcript (.txt)", type=["txt"], key="thesis_transcript")
-                transcript_text = ""
-                if transcript_file is not None:
+                past_tx_text = ""
+                current_tx_text = ""
+                if past_transcript_file is not None:
                     try:
-                        transcript_text = transcript_file.getvalue().decode("utf-8", errors="ignore")
+                        past_tx_text = past_transcript_file.getvalue().decode("utf-8", errors="ignore")
                     except Exception:
-                        transcript_text = ""
+                        past_tx_text = ""
+                if current_transcript_file is not None:
+                    try:
+                        current_tx_text = current_transcript_file.getvalue().decode("utf-8", errors="ignore")
+                    except Exception:
+                        current_tx_text = ""
 
                 allocation_details = {
                     "shares": shares,
                     "avg_cost": avg_cost,
-                    "current_value": current_value,
                     "portfolio_weight_pct": portfolio_weight_pct,
-                    "live_price": live_price,
-                    "trailing_pe": trailing_pe,
-                    "forward_pe": forward_pe,
-                    "operating_cash_flow": operating_cash_flow,
-                    "roic": roic,
-                    "wacc": wacc,
+                    "current_value": current_value,
                 }
 
-                if st.button("Generate Institutional Thesis Report", key="gen_thesis", width="stretch"):
+                if st.button("Generate Institutional Thesis", key="gen_thesis", width="stretch"):
                     try:
+                        if not current_tx_text.strip():
+                            st.error("Please upload the Current/Latest transcript before generating a thesis.")
+                            raise RuntimeError("Current transcript missing.")
+
                         with st.spinner("Generating investment thesis..."):
-                            report = generate_single_investment_thesis(selected_ticker, allocation_details, transcript_text)
+                            financial_profile = fetch_fmp_financial_profile(selected_ticker)
+                            report = generate_comparative_investment_thesis(
+                                selected_ticker,
+                                allocation_details,
+                                financial_profile,
+                                past_tx_text,
+                                current_tx_text,
+                            )
                         st.markdown(report)
 
                         # persist AI report (best-effort)
                         try:
-                            inputs = {"ticker": selected_ticker, "allocation": allocation_details}
+                            inputs = {
+                                "ticker": selected_ticker,
+                                "allocation": allocation_details,
+                                "has_past_transcript": bool(past_tx_text.strip()),
+                                "has_current_transcript": bool(current_tx_text.strip()),
+                            }
                             db.insert_ai_analysis_report(
                                 ticker=selected_ticker,
                                 analysis_type="investment_thesis",
@@ -783,7 +726,22 @@ def main() -> None:
                         except Exception:
                             LOGGER.exception("Failed to persist investment thesis report; continuing.")
                     except Exception as exc:
-                        st.error(f"Investment thesis generation failed: {exc}")
+                        # Friendly message for transient Gemini/service overloads
+                        msg = str(exc).lower()
+                        if "fmp_api_key" in msg or "fmp api key" in msg:
+                            st.error("FMP API key is missing or invalid. Please set `FMP_API_KEY` in Streamlit secrets.")
+                        elif "empty data" in msg or "endpoint" in msg:
+                            st.error(f"Could not load FMP financial statements for {selected_ticker}. Please verify ticker/API key and try again.")
+                        elif any(k in msg for k in ("503", "unavailable", "high demand", "too many requests", "rate limit", "429")):
+                            st.error(
+                                "AI service temporarily overloaded (503/rate-limit). Try again in a few minutes. "
+                                "You can also set a different fallback model via the GEMINI_MODEL Streamlit secret."
+                            )
+                            st.info("For reliability, try again after a short wait or reduce request frequency.")
+                        elif "current transcript missing" in msg:
+                            pass
+                        else:
+                            st.error(f"Investment thesis generation failed: {exc}")
 
 
 if __name__ == "__main__":

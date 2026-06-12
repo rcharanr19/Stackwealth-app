@@ -2,11 +2,18 @@ from __future__ import annotations
 
 from typing import Any
 import os
+import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 import streamlit as st
 import yfinance as yf
 from google import genai
+import time
+import logging
+import requests
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _gemini_client() -> genai.Client:
@@ -81,6 +88,222 @@ def get_model_name() -> str:
     return DEFAULT_GEMINI_MODEL
 
 
+def _gemini_generate_with_retries(client: genai.Client, prompt: str, models: list[str] | None = None, max_attempts: int = 3, initial_delay: float = 1.0) -> Any:
+    """Attempt generation across one or more Gemini models with retries/backoff on transient 503/429 errors.
+
+    - `models` is tried in order. For each model we will retry up to `max_attempts` with exponential backoff on retriable errors.
+    - Raises the last exception encountered if all attempts/models fail.
+    """
+    if models is None:
+        models = [get_model_name(), DEFAULT_GEMINI_MODEL]
+
+    last_exc = None
+    for model in models:
+        if not model:
+            continue
+        delay = initial_delay
+        for attempt in range(1, max_attempts + 1):
+            try:
+                LOGGER.debug("Gemini generate attempt model=%s attempt=%d", model, attempt)
+                return client.models.generate_content(model=model, contents=prompt)
+            except Exception as exc:
+                last_exc = exc
+                msg = str(exc).lower()
+                # If it's a model-not-found style error, raise immediately so caller can inspect available models
+                if "404" in msg or "not found" in msg:
+                    try:
+                        available = [m.name for m in client.models.list()]
+                    except Exception:
+                        available = None
+                    avail_text = ", ".join(available) if available else "(could not list models)"
+                    LOGGER.warning("Gemini model not found: %s; available: %s", model, avail_text)
+                    raise RuntimeError(f"Model '{model}' not available for generation. Available: {avail_text}") from exc
+
+                # Retries for transient service-side errors
+                if any(k in msg for k in ("503", "unavailable", "high demand", "too many requests", "rate limit", "429")):
+                    LOGGER.warning("Transient Gemini error for model=%s attempt=%d: %s", model, attempt, msg)
+                    LOGGER.debug("Full exception", exc_info=exc)
+                    if attempt < max_attempts:
+                        time.sleep(delay)
+                        delay *= 2
+                        continue
+                # Non-retriable or exhausted attempts -> break to try next model
+                break
+
+    # If we exhausted all models/attempts, raise the last exception
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Gemini generation failed without a specific exception.")
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
+    symbol = str(ticker_symbol or "").upper().strip()
+    if not symbol:
+        raise ValueError("Ticker symbol is required.")
+
+    api_key = str(st.secrets.get("FMP_API_KEY", "")).strip()
+    if not api_key:
+        raise RuntimeError("FMP_API_KEY is missing from Streamlit secrets.")
+
+    endpoints = {
+        "income_statement": f"https://financialmodelingprep.com/api/v3/income-statement/{symbol}?limit=5&apikey={api_key}",
+        "balance_sheet": f"https://financialmodelingprep.com/api/v3/balance-sheet-statement/{symbol}?limit=5&apikey={api_key}",
+        "cash_flow": f"https://financialmodelingprep.com/api/v3/cash-flow-statement/{symbol}?limit=5&apikey={api_key}",
+    }
+
+    def _fetch_one(name: str, url: str) -> tuple[str, list[dict[str, Any]]]:
+        response = requests.get(url, timeout=25)
+        if response.status_code in (401, 403):
+            raise RuntimeError("FMP API key appears invalid or unauthorized.")
+        if response.status_code != 200:
+            raise RuntimeError(f"FMP endpoint '{name}' failed with HTTP {response.status_code}.")
+        payload = response.json()
+        if not isinstance(payload, list) or len(payload) == 0:
+            raise RuntimeError(f"FMP endpoint '{name}' returned empty data for {symbol}.")
+        return name, payload
+
+    results: dict[str, list[dict[str, Any]]] = {}
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {executor.submit(_fetch_one, name, url): name for name, url in endpoints.items()}
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                key, payload = future.result()
+                results[key] = payload
+            except Exception as exc:
+                raise RuntimeError(f"Failed to fetch FMP {name} for {symbol}: {exc}") from exc
+
+    return {
+        "ticker": symbol,
+        "income_statement": results.get("income_statement", []),
+        "balance_sheet": results.get("balance_sheet", []),
+        "cash_flow": results.get("cash_flow", []),
+    }
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def generate_comparative_investment_thesis(
+    ticker: str,
+    allocation_details: dict[str, Any],
+    financial_profile: dict[str, Any],
+    past_tx_text: str,
+    current_tx_text: str,
+) -> str:
+    symbol = str(ticker or "").upper().strip()
+    if not symbol:
+        raise RuntimeError("Ticker symbol is required for thesis generation.")
+    if not allocation_details or not isinstance(allocation_details, dict):
+        raise RuntimeError("Allocation details are required and must be a dict.")
+    if not financial_profile or not isinstance(financial_profile, dict):
+        raise RuntimeError("Financial profile is required and must be a dict.")
+
+    current_text = str(current_tx_text or "").strip()
+    if not current_text:
+        raise RuntimeError("Current/Latest transcript is required.")
+    past_text = str(past_tx_text or "").strip()
+
+    financial_profile_json_dump = json.dumps(financial_profile, indent=2, default=str)
+
+    if past_text:
+        prompt = f"""Act as a world-class institutional value investor, forensic equity research analyst, and expert capital allocator. You have been provided with 5 years of historical financial data from the Financial Modeling Prep (FMP) API, the user's current allocation footprint, and TWO distinct corporate earnings call transcripts: a 'Baseline/Past' transcript and a 'Current/Latest' transcript.
+
+Your primary objective is to conduct a strict 'Strategic Commitment Audit' to evaluate if management is sticking to its stated vision, milestones, and promises, or if they are moving goalposts, hiding execution failures, or shifting strategy due to deteriorating fundamentals.
+
+Important: The target ticker for this assignment is {symbol}. Focus your entire analysis on {symbol} and its business.
+
+### USER'S CURRENT ALLOCATION DETAIL:
+- Shares Owned: {allocation_details['shares']}
+- Average Cost Basis: ${allocation_details['avg_cost']:.2f}
+- Allocation Weighting in Total Portfolio: {allocation_details['portfolio_weight_pct']:.2f}%
+
+### HISTORICAL FUNDAMENTAL STATEMENT DATASETS (FMP JSON):
+{financial_profile_json_dump}
+
+### TRANSCRIPT ARTIFACTS FOR ANALYSIS:
+- BASELINE/PAST TRANSCRIPT TEXT:
+{past_text}
+
+- CURRENT/LATEST TRANSCRIPT TEXT:
+{current_text}
+
+Structure your comprehensive evaluation into the following distinct sections:
+
+### 1. The Promise vs. Performance Ledger
+Construct a clean Markdown table mapping out explicit promises or metric guidance made in the Baseline Transcript vs. the actual execution/results reported in the Current Transcript.
+- Column 1: Stated Goal / Management Promise (Past)
+- Column 2: Actual Outcome / Current Status (Present)
+- Column 3: Verdict (Delivered / Progressing / Broken / Moving Goalposts)
+
+### 2. Executive Summary & Thesis Drift
+* Provide a 2-3 sentence overview of whether the core business model and economic moat have remained stable or drifted over this timeline.
+* Identify if management's tone, rhetoric, or preferred Key Performance Indicators (KPIs) have shifted.
+
+### 3. Ecosystem Interdependency & Capital Allocation Discipline
+* Review the historical 5-year financials provided by FMP. Cross-reference management's past capital allocation commentary with actual balance sheet behavior today.
+* Evaluate ROIC relative to WACC using the provided arrays and state whether they are compounding value or shifting to defensive behavior.
+
+### 4. The Draconian Scenarios & Broken Moat Red Flags
+* Based on the Q&A sections of both transcripts, evaluate if prior structural risks manifested.
+* Highlight contradictions or evasive language in the current Q&A when compared against past guidance.
+
+### 5. Multi-Year Valuation Scenarios & Return Profiles
+* Map Bull/Base/Bear profiles for a 3-to-4-year horizon, adjusting management execution credibility.
+
+### 6. Final Investment Verdict & Monitor Dashboard
+* **The Decision:** Buy, Hold, Watchlist, or Avoid. Address whether current portfolio weight ({allocation_details['portfolio_weight_pct']:.2f}%) is appropriate.
+* **The Promise-Tracker Dashboard:** Provide 3 forward operational metrics or milestones to monitor quarter-over-quarter.
+""".strip()
+    else:
+        prompt = f"""Act as a world-class institutional value investor, forensic equity research analyst, and expert capital allocator. You have been provided with 5 years of historical financial data from the Financial Modeling Prep (FMP) API, the user's current allocation footprint, and one current earnings call transcript.
+
+Important: The target ticker for this assignment is {symbol}. Focus your entire analysis on {symbol} and its business.
+
+### USER'S CURRENT ALLOCATION DETAIL:
+- Shares Owned: {allocation_details['shares']}
+- Average Cost Basis: ${allocation_details['avg_cost']:.2f}
+- Allocation Weighting in Total Portfolio: {allocation_details['portfolio_weight_pct']:.2f}%
+
+### HISTORICAL FUNDAMENTAL STATEMENT DATASETS (FMP JSON):
+{financial_profile_json_dump}
+
+### CURRENT/LATEST TRANSCRIPT TEXT:
+{current_text}
+
+Structure your comprehensive evaluation into the following distinct sections:
+
+### 1. Current Transcript-to-Financial Timeline Ledger
+Create a Markdown table that maps current management claims versus evidence in the 5-year financial history.
+- Column 1: Current Claim / KPI Focus
+- Column 2: 5-Year Financial Evidence
+- Column 3: Verdict (Supported / Weakly Supported / Contradicted)
+
+### 2. Executive Summary & Thesis Drift
+* Provide a 2-3 sentence view on business model durability and moat trajectory.
+* Identify key language/tone shifts and what they imply for execution quality.
+
+### 3. Ecosystem Interdependency & Capital Allocation Discipline
+* Evaluate 5-year capital allocation behavior and management discipline using FMP history.
+* Estimate whether the business appears to be compounding value (ROIC vs WACC framing) or deteriorating.
+
+### 4. Draconian Scenarios & Broken Moat Red Flags
+* Identify key downside pathways including margin traps, demand deterioration, and balance-sheet stress.
+
+### 5. Multi-Year Valuation Scenarios & Return Profiles
+* Build Bull/Base/Bear profiles over 3-to-4 years with assumptions tied to execution credibility.
+
+### 6. Final Investment Verdict & Monitor Dashboard
+* **The Decision:** Buy, Hold, Watchlist, or Avoid, including whether portfolio weight ({allocation_details['portfolio_weight_pct']:.2f}%) is appropriate.
+* **The Dashboard:** Provide 3 concrete forward metrics/milestones to track.
+""".strip()
+
+    client = _gemini_client()
+    # Honor configured model first, then fall back to 3.5 and default.
+    preferred_models = list(dict.fromkeys([get_model_name(), "gemini-3.5-flash", DEFAULT_GEMINI_MODEL]))
+    response = _gemini_generate_with_retries(client, prompt, models=preferred_models)
+    return _response_text(response)
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_reverse_dcf_analysis(ticker_symbol: str) -> str:
     symbol = str(ticker_symbol or "").upper().strip()
@@ -130,16 +353,11 @@ Output requirements:
 
     model_name = get_model_name()
     try:
-        response = client.models.generate_content(model=model_name, contents=prompt)
-    except Exception as exc:
-        msg = str(exc).lower()
-        try:
-            available = [m.name for m in client.models.list()]
-        except Exception:
-            available = None
-        if "404" in msg or "not found" in msg:
-            avail_text = ", ".join(available) if available else "(could not list models)"
-            raise RuntimeError(f"Model '{model_name}' not available for generation. Available: {avail_text}") from exc
+        # Try preferred model, then configured model, then default, with retries
+        preferred = [model_name, DEFAULT_GEMINI_MODEL]
+        response = _gemini_generate_with_retries(client, prompt, models=preferred)
+    except Exception:
+        # Let caller surface the underlying exception
         raise
     return _response_text(response)
 
@@ -178,16 +396,9 @@ Output requirements:
 
     model_name = get_model_name()
     try:
-        response = client.models.generate_content(model=model_name, contents=prompt)
-    except Exception as exc:
-        msg = str(exc).lower()
-        try:
-            available = [m.name for m in client.models.list()]
-        except Exception:
-            available = None
-        if "404" in msg or "not found" in msg:
-            avail_text = ", ".join(available) if available else "(could not list models)"
-            raise RuntimeError(f"Model '{model_name}' not available for generation. Available: {avail_text}") from exc
+        preferred = [model_name, DEFAULT_GEMINI_MODEL]
+        response = _gemini_generate_with_retries(client, prompt, models=preferred)
+    except Exception:
         raise
     return _response_text(response)
 
@@ -287,15 +498,9 @@ Additional context (transcript):
 
     client = _gemini_client()
     try:
-        response = client.models.generate_content(model="gemini-3.5-flash", contents=prompt)
-    except Exception as exc:
-        msg = str(exc).lower()
-        try:
-            available = [m.name for m in client.models.list()]
-        except Exception:
-            available = None
-        if "404" in msg or "not found" in msg:
-            avail_text = ", ".join(available) if available else "(could not list models)"
-            raise RuntimeError(f"Model 'gemini-3.5-flash' not available for generation. Available: {avail_text}") from exc
+        # Honor configured model first, then fall back to 3.5 and default models.
+        preferred_models = list(dict.fromkeys([get_model_name(), "gemini-3.5-flash", DEFAULT_GEMINI_MODEL]))
+        response = _gemini_generate_with_retries(client, prompt, models=preferred_models)
+    except Exception:
         raise
     return _response_text(response)
