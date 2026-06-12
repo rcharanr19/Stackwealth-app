@@ -17,7 +17,7 @@ from alphavault.postgres_store import PostgresStore
 from alphavault.logging_utils import configure_logging
 from alphavault.market_data import MarketDataService
 from alphavault.robinhood_sync import RobinhoodSyncService
-from tabs.ai_analysis import get_reverse_dcf_analysis, get_transcript_mosaic_analysis
+from tabs.ai_analysis import get_reverse_dcf_analysis, get_transcript_mosaic_analysis, get_model_name
 
 
 configure_logging()
@@ -495,7 +495,7 @@ def main() -> None:
                             db.insert_ai_analysis_report(
                                 ticker=selected_ticker,
                                 analysis_type="reverse_dcf",
-                                model="gemini-1.5-flash",
+                                model=get_model_name(),
                                 prompt_summary=None,
                                 report_md=report,
                                 inputs=inputs,
@@ -542,7 +542,7 @@ def main() -> None:
                         db.insert_ai_analysis_report(
                             ticker=mosaic_ticker,
                             analysis_type="transcript_mosaic",
-                            model="gemini-1.5-flash",
+                            model=get_model_name(),
                             prompt_summary=None,
                             report_md=report,
                             inputs=inputs,

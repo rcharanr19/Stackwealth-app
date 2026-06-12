@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import os
 
 import pandas as pd
 import streamlit as st
@@ -66,6 +67,20 @@ def _response_text(response: Any) -> str:
     return "No model output was returned."
 
 
+DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
+
+
+def get_model_name() -> str:
+    """Resolve the Gemini model name from environment, Streamlit secrets, or default."""
+    model = os.environ.get("GEMINI_MODEL")
+    if model:
+        return model.strip()
+    model = str(st.secrets.get("GEMINI_MODEL", "")).strip()
+    if model:
+        return model
+    return DEFAULT_GEMINI_MODEL
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_reverse_dcf_analysis(ticker_symbol: str) -> str:
     symbol = str(ticker_symbol or "").upper().strip()
@@ -113,10 +128,19 @@ Output requirements:
 - Keep it professional, objective, and numerically grounded.
 """.strip()
 
-    response = client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=prompt,
-    )
+    model_name = get_model_name()
+    try:
+        response = client.models.generate_content(model=model_name, contents=prompt)
+    except Exception as exc:
+        msg = str(exc).lower()
+        try:
+            available = [m.name for m in client.models.list()]
+        except Exception:
+            available = None
+        if "404" in msg or "not found" in msg:
+            avail_text = ", ".join(available) if available else "(could not list models)"
+            raise RuntimeError(f"Model '{model_name}' not available for generation. Available: {avail_text}") from exc
+        raise
     return _response_text(response)
 
 
@@ -152,8 +176,17 @@ Output requirements:
 - Be specific and evidence-based, not sensational.
 """.strip()
 
-    response = client.models.generate_content(
-        model="gemini-1.5-flash",
-        contents=prompt,
-    )
+    model_name = get_model_name()
+    try:
+        response = client.models.generate_content(model=model_name, contents=prompt)
+    except Exception as exc:
+        msg = str(exc).lower()
+        try:
+            available = [m.name for m in client.models.list()]
+        except Exception:
+            available = None
+        if "404" in msg or "not found" in msg:
+            avail_text = ", ".join(available) if available else "(could not list models)"
+            raise RuntimeError(f"Model '{model_name}' not available for generation. Available: {avail_text}") from exc
+        raise
     return _response_text(response)
