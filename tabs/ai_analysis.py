@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import os
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -135,9 +136,11 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
     if not symbol:
         raise ValueError("Ticker symbol is required.")
 
-    api_key = str(st.secrets.get("FMP_API_KEY", "")).strip()
+    api_key = str(st.secrets.get("FMP_API_KEY", "") or os.environ.get("FMP_API_KEY", "")).strip()
     if not api_key:
-        raise RuntimeError("FMP_API_KEY is missing from Streamlit secrets.")
+        raise RuntimeError("FMP_API_KEY is missing from Streamlit secrets or environment.")
+
+    LOGGER.debug("Starting FMP financial profile fetch for %s", symbol)
 
     endpoints = {
         "income_statement": f"https://financialmodelingprep.com/api/v3/income-statement/{symbol}?limit=5&apikey={api_key}",
@@ -146,14 +149,23 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
     }
 
     def _fetch_one(name: str, url: str) -> tuple[str, list[dict[str, Any]]]:
+        LOGGER.debug("Fetching FMP endpoint %s for %s", name, symbol)
         response = requests.get(url, timeout=25)
+        LOGGER.debug(
+            "FMP endpoint %s for %s returned HTTP %s",
+            name,
+            symbol,
+            response.status_code,
+        )
         if response.status_code in (401, 403):
-            raise RuntimeError("FMP API key appears invalid or unauthorized.")
+            raise RuntimeError(f"FMP API key appears invalid or unauthorized for {name} ({response.status_code}).")
         if response.status_code != 200:
-            raise RuntimeError(f"FMP endpoint '{name}' failed with HTTP {response.status_code}.")
+            raise RuntimeError(f"FMP endpoint '{name}' failed with HTTP {response.status_code} for {symbol}.")
         payload = response.json()
         if not isinstance(payload, list) or len(payload) == 0:
+            LOGGER.warning("FMP endpoint %s for %s returned empty payload", name, symbol)
             raise RuntimeError(f"FMP endpoint '{name}' returned empty data for {symbol}.")
+        LOGGER.debug("FMP endpoint %s for %s returned %d rows", name, symbol, len(payload))
         return name, payload
 
     results: dict[str, list[dict[str, Any]]] = {}
@@ -164,9 +176,12 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
             try:
                 key, payload = future.result()
                 results[key] = payload
+                LOGGER.info("Completed FMP endpoint %s for %s", key, symbol)
             except Exception as exc:
+                LOGGER.exception("FMP endpoint %s failed for %s", name, symbol)
                 raise RuntimeError(f"Failed to fetch FMP {name} for {symbol}: {exc}") from exc
 
+    LOGGER.info("Completed FMP financial profile fetch for %s", symbol)
     return {
         "ticker": symbol,
         "income_statement": results.get("income_statement", []),

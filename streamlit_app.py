@@ -728,7 +728,10 @@ def main() -> None:
                     except Exception as exc:
                         # Friendly message for transient Gemini/service overloads
                         msg = str(exc).lower()
-                        if "fmp_api_key" in msg or "fmp api key" in msg:
+                        LOGGER.exception("FMP thesis generation failed for %s", selected_ticker)
+                        if "missing from streamlit secrets or environment" in msg:
+                            st.error("FMP_API_KEY is not configured. Add it to Streamlit secrets or the environment.")
+                        elif "appears invalid or unauthorized" in msg:
                             st.error("FMP API key is missing or invalid. Please set `FMP_API_KEY` in Streamlit secrets.")
                         elif "empty data" in msg or "endpoint" in msg:
                             st.error(f"Could not load FMP financial statements for {selected_ticker}. Please verify ticker/API key and try again.")
