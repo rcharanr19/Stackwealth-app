@@ -16,6 +16,79 @@ import requests
 LOGGER = logging.getLogger(__name__)
 
 
+FMP_SUPPORTED_TICKERS = {
+    "AAPL", "TSLA", "AMZN", "MSFT", "NVDA", "GOOGL", "META", "NFLX", "JPM", "V", "BAC",
+    "PYPL", "DIS", "T", "PFE", "COST", "INTC", "KO", "TGT", "NKE", "SPY", "BA", "BABA",
+    "XOM", "WMT", "GE", "CSCO", "VZ", "JNJ", "CVX", "PLTR", "SQ", "SHOP", "SBUX", "SOFI",
+    "HOOD", "RBLX", "SNAP", "AMD", "UBER", "FDX", "ABBV", "ETSY", "MRNA", "LMT", "GM", "F",
+    "LCID", "CCL", "DAL", "UAL", "AAL", "TSM", "SONY", "ET", "MRO", "COIN", "RIVN", "RIOT",
+    "CPRX", "VWO", "SPYG", "NOK", "ROKU", "VIAC", "ATVI", "BIDU", "DOCU", "ZM", "PINS", "TLRY",
+    "WBA", "MGM", "NIO", "C", "GS", "WFC", "ADBE", "PEP", "UNH", "CARR", "HCA", "TWTR", "BILI",
+    "SIRI", "FUBO", "RKT",
+}
+
+
+def _df_to_period_records(frame: pd.DataFrame | None, limit: int = 5) -> list[dict[str, Any]]:
+    if frame is None or frame.empty:
+        return []
+    try:
+        table = frame.T.head(limit).copy()
+        table.index = table.index.astype(str)
+        return table.reset_index().rename(columns={"index": "period"}).to_dict(orient="records")
+    except Exception:
+        return []
+
+
+def _extract_statement_value(frame: pd.DataFrame | None, row_names: list[str]) -> float | None:
+    if frame is None or frame.empty:
+        return None
+    for row_name in row_names:
+        if row_name not in frame.index:
+            continue
+        series = frame.loc[row_name]
+        if isinstance(series, pd.Series):
+            for value in series.tolist():
+                parsed = _safe_float(value)
+                if parsed is not None:
+                    return parsed
+        else:
+            parsed = _safe_float(series)
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _fetch_yahoo_financial_profile(symbol: str) -> dict[str, Any]:
+    LOGGER.debug("Building Yahoo financial profile for %s", symbol)
+    ticker = yf.Ticker(symbol)
+    info = ticker.info or {}
+    financials = getattr(ticker, "financials", None)
+    balance_sheet = getattr(ticker, "balance_sheet", None)
+    cashflow = getattr(ticker, "cashflow", None)
+
+    profile = {
+        "ticker": symbol,
+        "source": "yfinance",
+        "company_name": info.get("longName") or info.get("shortName"),
+        "currency": str(info.get("currency") or "").upper().strip() or None,
+        "price": _safe_float(info.get("currentPrice") or info.get("regularMarketPrice")),
+        "market_cap": _safe_float(info.get("marketCap") or info.get("mktCap")),
+        "trailingPE": _safe_float(info.get("trailingPE") or info.get("trailingPe") or info.get("pe")),
+        "forwardPE": _safe_float(info.get("forwardPE")),
+        "operating_cash_flow": _extract_statement_value(
+            cashflow,
+            ["Operating Cash Flow", "Net Cash Provided By Operating Activities", "Total Cash From Operating Activities"],
+        ),
+        "total_assets": _extract_statement_value(balance_sheet, ["Total Assets"]),
+        "total_debt": _extract_statement_value(balance_sheet, ["Total Debt", "Short Long Term Debt", "Long Term Debt", "Short Term Debt"]),
+        "income_statement": _df_to_period_records(financials, limit=5),
+        "balance_sheet": _df_to_period_records(balance_sheet, limit=5),
+        "cash_flow": _df_to_period_records(cashflow, limit=5),
+    }
+    LOGGER.info("Built Yahoo financial profile for %s", symbol)
+    return profile
+
+
 def _gemini_client() -> genai.Client:
     api_key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
     if not api_key:
@@ -136,9 +209,14 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
     if not symbol:
         raise ValueError("Ticker symbol is required.")
 
+    if symbol not in FMP_SUPPORTED_TICKERS:
+        LOGGER.info("Ticker %s is not in the FMP-supported list; using Yahoo finance profile", symbol)
+        return _fetch_yahoo_financial_profile(symbol)
+
     api_key = str(st.secrets.get("FMP_API_KEY", "") or os.environ.get("FMP_API_KEY", "")).strip()
     if not api_key:
-        raise RuntimeError("FMP_API_KEY is missing from Streamlit secrets or environment.")
+        LOGGER.warning("FMP_API_KEY missing; falling back to Yahoo finance profile for %s", symbol)
+        return _fetch_yahoo_financial_profile(symbol)
 
     LOGGER.debug("Starting FMP financial profile fetch for %s", symbol)
 
@@ -192,12 +270,13 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
                 results[key] = payload
                 LOGGER.info("Completed FMP endpoint %s for %s", key, symbol)
             except Exception as exc:
-                LOGGER.exception("FMP endpoint %s failed for %s", name, symbol)
-                raise RuntimeError(f"Failed to fetch FMP {name} for {symbol}: {exc}") from exc
+                LOGGER.exception("FMP endpoint %s failed for %s; falling back to Yahoo profile", name, symbol)
+                return _fetch_yahoo_financial_profile(symbol)
 
     LOGGER.info("Completed FMP financial profile fetch for %s", symbol)
     return {
         "ticker": symbol,
+        "source": "fmp",
         "income_statement": results.get("income_statement", []),
         "balance_sheet": results.get("balance_sheet", []),
         "cash_flow": results.get("cash_flow", []),
@@ -209,8 +288,8 @@ def generate_comparative_investment_thesis(
     ticker: str,
     allocation_details: dict[str, Any],
     financial_profile: dict[str, Any],
-    past_tx_text: str,
-    current_tx_text: str,
+    past_tx_text: str = "",
+    current_tx_text: str = "",
 ) -> str:
     symbol = str(ticker or "").upper().strip()
     if not symbol:
@@ -221,13 +300,11 @@ def generate_comparative_investment_thesis(
         raise RuntimeError("Financial profile is required and must be a dict.")
 
     current_text = str(current_tx_text or "").strip()
-    if not current_text:
-        raise RuntimeError("Current/Latest transcript is required.")
     past_text = str(past_tx_text or "").strip()
 
     financial_profile_json_dump = json.dumps(financial_profile, indent=2, default=str)
 
-    if past_text:
+    if past_text and current_text:
         prompt = f"""Act as a world-class institutional value investor, forensic equity research analyst, and expert capital allocator. You have been provided with 5 years of historical financial data from the Financial Modeling Prep (FMP) API, the user's current allocation footprint, and TWO distinct corporate earnings call transcripts: a 'Baseline/Past' transcript and a 'Current/Latest' transcript.
 
 Your primary objective is to conduct a strict 'Strategic Commitment Audit' to evaluate if management is sticking to its stated vision, milestones, and promises, or if they are moving goalposts, hiding execution failures, or shifting strategy due to deteriorating fundamentals.
@@ -276,7 +353,7 @@ Construct a clean Markdown table mapping out explicit promises or metric guidanc
 * **The Decision:** Buy, Hold, Watchlist, or Avoid. Address whether current portfolio weight ({allocation_details['portfolio_weight_pct']:.2f}%) is appropriate.
 * **The Promise-Tracker Dashboard:** Provide 3 forward operational metrics or milestones to monitor quarter-over-quarter.
 """.strip()
-    else:
+    elif current_text or past_text:
         prompt = f"""Act as a world-class institutional value investor, forensic equity research analyst, and expert capital allocator. You have been provided with 5 years of historical financial data from the Financial Modeling Prep (FMP) API, the user's current allocation footprint, and one current earnings call transcript.
 
 Important: The target ticker for this assignment is {symbol}. Focus your entire analysis on {symbol} and its business.
@@ -313,6 +390,47 @@ Create a Markdown table that maps current management claims versus evidence in t
 
 ### 5. Multi-Year Valuation Scenarios & Return Profiles
 * Build Bull/Base/Bear profiles over 3-to-4 years with assumptions tied to execution credibility.
+
+### 6. Final Investment Verdict & Monitor Dashboard
+* **The Decision:** Buy, Hold, Watchlist, or Avoid, including whether portfolio weight ({allocation_details['portfolio_weight_pct']:.2f}%) is appropriate.
+* **The Dashboard:** Provide 3 concrete forward metrics/milestones to track.
+""".strip()
+    else:
+        prompt = f"""Act as a world-class institutional value investor, forensic equity research analyst, and expert capital allocator. You have been provided with 5 years of historical financial data from the Financial Modeling Prep (FMP) API or Yahoo Finance fallback data, and the user's current allocation footprint.
+
+Important: The target ticker for this assignment is {symbol}. Focus your entire analysis on {symbol} and its business.
+
+### USER'S CURRENT ALLOCATION DETAIL:
+- Shares Owned: {allocation_details['shares']}
+- Average Cost Basis: ${allocation_details['avg_cost']:.2f}
+- Allocation Weighting in Total Portfolio: {allocation_details['portfolio_weight_pct']:.2f}%
+
+### HISTORICAL FUNDAMENTAL STATEMENT DATASETS:
+{financial_profile_json_dump}
+
+No transcript text was provided. Base your thesis on the financial profile, balance sheet/income statement trends, capital allocation history, market positioning, and the portfolio weight.
+
+Structure your comprehensive evaluation into the following distinct sections:
+
+### 1. Financial History Ledger
+Construct a clean Markdown table mapping the most important trends, inflections, and risks visible in the provided financial history.
+- Column 1: Metric / Trend
+- Column 2: Evidence from the historical data
+- Column 3: Verdict (Improving / Stable / Deteriorating / Mixed)
+
+### 2. Executive Summary & Thesis Drift
+* Provide a 2-3 sentence view on business model durability and moat trajectory.
+* State whether the thesis is strong enough to support the current weight.
+
+### 3. Ecosystem Interdependency & Capital Allocation Discipline
+* Evaluate capital allocation behavior and management discipline using the historical data.
+* Estimate whether the business appears to be compounding value or deteriorating.
+
+### 4. Draconian Scenarios & Broken Moat Red Flags
+* Identify key downside pathways including margin traps, demand deterioration, and balance-sheet stress.
+
+### 5. Multi-Year Valuation Scenarios & Return Profiles
+* Build Bull/Base/Bear profiles over a 3-to-4-year horizon with assumptions tied to execution credibility.
 
 ### 6. Final Investment Verdict & Monitor Dashboard
 * **The Decision:** Buy, Hold, Watchlist, or Avoid, including whether portfolio weight ({allocation_details['portfolio_weight_pct']:.2f}%) is appropriate.

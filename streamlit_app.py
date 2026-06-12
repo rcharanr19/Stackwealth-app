@@ -659,15 +659,17 @@ def main() -> None:
                     st.text_area("Transcript (cached)", latest_transcript.get("content") or "", height=180)
 
                 past_transcript_file = st.file_uploader(
-                    "Upload Baseline/Past Transcript (e.g., 1-2 Years Ago)",
+                    "Upload Baseline/Past Transcript (optional, e.g., 1-2 Years Ago)",
                     type=["txt"],
                     key="past_tx",
                 )
                 current_transcript_file = st.file_uploader(
-                    "Upload Current/Latest Transcript",
+                    "Upload Current/Latest Transcript (optional)",
                     type=["txt"],
                     key="current_tx",
                 )
+
+                st.caption("Transcript uploads are optional. If none are provided, the thesis will use the financial profile and portfolio context only.")
 
                 past_tx_text = ""
                 current_tx_text = ""
@@ -691,10 +693,6 @@ def main() -> None:
 
                 if st.button("Generate Institutional Thesis", key="gen_thesis", width="stretch"):
                     try:
-                        if not current_tx_text.strip():
-                            st.error("Please upload the Current/Latest transcript before generating a thesis.")
-                            raise RuntimeError("Current transcript missing.")
-
                         with st.spinner("Generating investment thesis..."):
                             financial_profile = fetch_fmp_financial_profile(selected_ticker)
                             report = generate_comparative_investment_thesis(
