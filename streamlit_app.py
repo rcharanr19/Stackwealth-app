@@ -667,11 +667,6 @@ def main() -> None:
                                 trailing_pe = trailing_pe or None
                         except Exception:
                             LOGGER.exception("fallback market_service.fetch_asset_profile failed")
-                except Exception:
-                    LOGGER.exception("Failed to fetch fundamentals via yfinance; continuing with best-effort data")
-                                except Exception:
-                                    continue
-
                     # Simple ROIC/WACC estimates (best-effort)
                     roic = None
                     wacc = None
