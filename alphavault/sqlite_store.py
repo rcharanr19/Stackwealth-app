@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -12,10 +13,14 @@ from .models import Position, Transaction, parse_position, parse_transaction
 EPSILON = 0.0001
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 class SQLiteStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        LOGGER.debug("Initializing SQLite store at %s", self.db_path)
         self._initialize()
 
     def _ensure_sync_profile_schema(self, conn: sqlite3.Connection) -> None:
@@ -51,6 +56,7 @@ class SQLiteStore:
         return {str(row["name"]) for row in rows}
 
     def _initialize(self) -> None:
+        LOGGER.debug("Ensuring SQLite schema exists at %s", self.db_path)
         with self._connect() as conn:
             conn.execute(
                 """
@@ -170,11 +176,18 @@ class SQLiteStore:
 
     def seed_from_json(self, json_path: Path) -> None:
         if not json_path.exists():
+            LOGGER.debug("Skipping seed_from_json because %s does not exist", json_path)
             return
 
         payload = json.loads(json_path.read_text(encoding="utf-8"))
         positions = [parse_position(item) for item in payload.get("positions", [])]
         transactions = [parse_transaction(item) for item in payload.get("transactions", [])]
+        LOGGER.debug(
+            "Seeding SQLite store from %s with %d positions and %d transactions",
+            json_path,
+            len(positions),
+            len(transactions),
+        )
 
         with self._connect() as conn:
             existing_positions = conn.execute("SELECT COUNT(*) AS c FROM portfolio_cache").fetchone()["c"]
@@ -197,6 +210,7 @@ class SQLiteStore:
                         for p in positions
                     ],
                 )
+                LOGGER.info("Seeded %d portfolio positions into SQLite cache", len(positions))
 
             existing_transactions = conn.execute("SELECT COUNT(*) AS c FROM transactions").fetchone()["c"]
             if existing_transactions == 0:
@@ -224,6 +238,7 @@ class SQLiteStore:
                     """,
                     rows,
                 )
+                LOGGER.info("Seeded %d transactions into SQLite store", len(rows))
 
     def load_portfolio_state(self) -> tuple[list[Position], list[Transaction]]:
         with self._connect() as conn:
@@ -241,6 +256,8 @@ class SQLiteStore:
                 ORDER BY tx_date
                 """
             ).fetchall()
+
+        LOGGER.debug("Loaded %d cached positions and %d transactions from SQLite", len(pos_rows), len(tx_rows))
 
         positions = [
             Position(
@@ -302,7 +319,14 @@ class SQLiteStore:
                     currency,
                 ),
             )
-            return cur.rowcount > 0
+            inserted = cur.rowcount > 0
+        LOGGER.debug(
+            "%s transaction %s for %s",
+            "Inserted" if inserted else "Skipped duplicate",
+            execution_id,
+            ticker,
+        )
+        return inserted
 
     def get_incremental_start_date(self, lookback_days: int = 7) -> str | None:
         """Return a safe start date for incremental Robinhood pulls.
@@ -343,6 +367,13 @@ class SQLiteStore:
         normalized_tracked = self._normalize_tickers(tracked_tickers)
         normalized_baseline = self._normalize_tickers(
             baseline_assets if baseline_assets is not None else set(normalized_tracked)
+        )
+        LOGGER.debug(
+            "Initializing sync profile if missing: baseline_date=%s tracked=%d baseline_assets=%d initialized=%s",
+            baseline_date,
+            len(normalized_tracked),
+            len(normalized_baseline),
+            initialized,
         )
         tracked_payload = json.dumps(normalized_tracked, separators=(",", ":"))
         baseline_payload = json.dumps(normalized_baseline, separators=(",", ":"))
@@ -385,6 +416,12 @@ class SQLiteStore:
         baseline_assets = self.load_baseline_assets_from_portfolio_json(json_path)
         baseline_date = self.load_baseline_date_from_portfolio_json(json_path)
         baseline_set = set(baseline_assets)
+        LOGGER.debug(
+            "Bootstrapping sync profile from %s with %d baseline assets and date %s",
+            json_path,
+            len(baseline_set),
+            baseline_date,
+        )
         self.initialize_sync_profile_if_missing(
             baseline_date=baseline_date,
             tracked_tickers=baseline_set,
@@ -426,6 +463,7 @@ class SQLiteStore:
             row = conn.execute(sql).fetchone()
 
         if row is None:
+            LOGGER.debug("No sync profile row exists yet")
             return None
 
         raw_tickers = row["tracked_tickers"] if "tracked_tickers" in row.keys() else None
@@ -463,6 +501,7 @@ class SQLiteStore:
 
     def set_baseline_value_usd(self, value: float) -> None:
         now = datetime.utcnow().isoformat()
+        LOGGER.debug("Updating baseline value USD to %.2f", float(value))
         with self._connect() as conn:
             self._ensure_sync_profile_schema(conn)
             conn.execute(
@@ -478,6 +517,8 @@ class SQLiteStore:
         normalized = set(self._normalize_tickers(tickers))
         if not normalized:
             return
+
+        LOGGER.debug("Adding %d tracked tickers", len(normalized))
 
         profile = self.get_sync_profile()
         if profile is None:
@@ -499,11 +540,13 @@ class SQLiteStore:
                 """,
                 (payload, now),
             )
+            LOGGER.info("Tracked ticker set updated to %d tickers", len(merged))
 
     def set_tracked_tickers(self, tickers: set[str]) -> None:
         normalized = self._normalize_tickers(tickers)
         payload = json.dumps(normalized, separators=(",", ":"))
         now = datetime.utcnow().isoformat()
+            LOGGER.debug("Replacing tracked ticker set with %d tickers", len(normalized))
         with self._connect() as conn:
             self._ensure_sync_profile_schema(conn)
             conn.execute(
@@ -517,6 +560,7 @@ class SQLiteStore:
 
     def mark_sync_initialized(self) -> None:
         now = datetime.utcnow().isoformat()
+        LOGGER.info("Marking sync profile as initialized")
         with self._connect() as conn:
             self._ensure_sync_profile_schema(conn)
             conn.execute(
@@ -535,6 +579,7 @@ class SQLiteStore:
 
     def touch_last_sync(self) -> None:
         now = datetime.utcnow().isoformat()
+        LOGGER.debug("Touching last sync timestamp")
         with self._connect() as conn:
             self._ensure_sync_profile_schema(conn)
             conn.execute(
@@ -553,6 +598,7 @@ class SQLiteStore:
     def list_cache_tickers(self) -> set[str]:
         with self._connect() as conn:
             rows = conn.execute("SELECT ticker FROM portfolio_cache").fetchall()
+        LOGGER.debug("Loaded %d tickers from portfolio cache", len(rows))
         return {str(row["ticker"]) for row in rows}
 
     def get_portfolio_position(self, ticker: str) -> Position | None:
@@ -657,6 +703,15 @@ class SQLiteStore:
         market_cap: float | None,
     ) -> None:
         now = datetime.utcnow().isoformat()
+        LOGGER.debug(
+            "Upserting portfolio cache for %s: shares=%.4f avg_price=%.4f currency=%s last_price=%s market_cap=%s",
+            ticker,
+            float(shares),
+            float(avg_price),
+            currency,
+            last_price,
+            market_cap,
+        )
         with self._connect() as conn:
             conn.execute(
                 """
@@ -686,6 +741,7 @@ class SQLiteStore:
 
     def refresh_existing_position_core(self, ticker: str) -> None:
         shares, avg_price, currency = self.derive_position_from_transactions(ticker)
+        LOGGER.debug("Refreshing existing position core for %s: shares=%.4f avg_price=%.4f currency=%s", ticker, shares, avg_price, currency)
         with self._connect() as conn:
             existing = conn.execute(
                 "SELECT company_name, last_price, market_cap FROM portfolio_cache WHERE ticker = ?",
@@ -707,6 +763,7 @@ class SQLiteStore:
 
     def update_market_snapshot(self, rows: list[dict[str, Any]]) -> None:
         now = datetime.utcnow().isoformat()
+        LOGGER.debug("Updating market snapshot for %d portfolio rows", len(rows))
         with self._connect() as conn:
             for row in rows:
                 conn.execute(
@@ -754,6 +811,7 @@ class SQLiteStore:
         )
 
     def delete_portfolio_position(self, ticker: str, delete_transactions: bool = True) -> None:
+        LOGGER.info("Deleting portfolio position for %s (delete_transactions=%s)", ticker, delete_transactions)
         with self._connect() as conn:
             conn.execute("DELETE FROM portfolio_cache WHERE ticker = ?", (ticker,))
             if delete_transactions:

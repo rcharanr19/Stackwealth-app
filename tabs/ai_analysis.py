@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from typing import Any
-import os
 import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -74,18 +73,12 @@ def _response_text(response: Any) -> str:
     return "No model output was returned."
 
 
-DEFAULT_GEMINI_MODEL = "gemini-1.5-flash"
-
-
 def get_model_name() -> str:
-    """Resolve the Gemini model name from environment, Streamlit secrets, or default."""
-    model = os.environ.get("GEMINI_MODEL")
-    if model:
-        return model.strip()
+    """Resolve the Gemini model name from Streamlit secrets."""
     model = str(st.secrets.get("GEMINI_MODEL", "")).strip()
-    if model:
-        return model
-    return DEFAULT_GEMINI_MODEL
+    if not model:
+        raise RuntimeError("GEMINI_MODEL is not configured in Streamlit secrets.")
+    return model
 
 
 def _gemini_generate_with_retries(client: genai.Client, prompt: str, models: list[str] | None = None, max_attempts: int = 3, initial_delay: float = 1.0) -> Any:
@@ -95,7 +88,7 @@ def _gemini_generate_with_retries(client: genai.Client, prompt: str, models: lis
     - Raises the last exception encountered if all attempts/models fail.
     """
     if models is None:
-        models = [get_model_name(), DEFAULT_GEMINI_MODEL]
+        models = [get_model_name()]
 
     last_exc = None
     for model in models:
@@ -298,9 +291,7 @@ Create a Markdown table that maps current management claims versus evidence in t
 """.strip()
 
     client = _gemini_client()
-    # Honor configured model first, then fall back to 3.5 and default.
-    preferred_models = list(dict.fromkeys([get_model_name(), "gemini-3.5-flash", DEFAULT_GEMINI_MODEL]))
-    response = _gemini_generate_with_retries(client, prompt, models=preferred_models)
+    response = _gemini_generate_with_retries(client, prompt)
     return _response_text(response)
 
 
@@ -353,9 +344,7 @@ Output requirements:
 
     model_name = get_model_name()
     try:
-        # Try preferred model, then configured model, then default, with retries
-        preferred = [model_name, DEFAULT_GEMINI_MODEL]
-        response = _gemini_generate_with_retries(client, prompt, models=preferred)
+        response = _gemini_generate_with_retries(client, prompt, models=[model_name])
     except Exception:
         # Let caller surface the underlying exception
         raise
@@ -396,8 +385,7 @@ Output requirements:
 
     model_name = get_model_name()
     try:
-        preferred = [model_name, DEFAULT_GEMINI_MODEL]
-        response = _gemini_generate_with_retries(client, prompt, models=preferred)
+        response = _gemini_generate_with_retries(client, prompt, models=[model_name])
     except Exception:
         raise
     return _response_text(response)
@@ -498,9 +486,7 @@ Additional context (transcript):
 
     client = _gemini_client()
     try:
-        # Honor configured model first, then fall back to 3.5 and default models.
-        preferred_models = list(dict.fromkeys([get_model_name(), "gemini-3.5-flash", DEFAULT_GEMINI_MODEL]))
-        response = _gemini_generate_with_retries(client, prompt, models=preferred_models)
+        response = _gemini_generate_with_retries(client, prompt, models=[get_model_name()])
     except Exception:
         raise
     return _response_text(response)

@@ -25,6 +25,9 @@ _yf_logger.propagate = False
 _yf_logger.disabled = True
 
 
+LOGGER = logging.getLogger(__name__)
+
+
 class MarketDataService:
     def __init__(self, cache: CacheStore, base_currency: str = "USD") -> None:
         self.cache = cache
@@ -36,6 +39,7 @@ class MarketDataService:
             return fn(*args, **kwargs)
 
     def _fetch_quote_live(self, ticker: str) -> Quote:
+        LOGGER.debug("Fetching live quote for %s", ticker)
         tk = yf.Ticker(ticker)
         fast_info = self._quiet_call(lambda: getattr(tk, "fast_info", None)) or {}
 
@@ -60,39 +64,56 @@ class MarketDataService:
         raw_currency = fast_info.get("currency")
         currency = str(raw_currency).upper().strip() if raw_currency else None
 
-        return Quote(
+        quote = Quote(
             price=float(price) if price is not None else None,
             market_cap=float(market_cap) if market_cap is not None else None,
             previous_close=float(previous_close) if previous_close is not None else None,
             company_name=company_name,
             currency=currency,
         )
+        LOGGER.debug(
+            "Fetched live quote for %s: price=%s market_cap=%s previous_close=%s currency=%s",
+            ticker,
+            quote.price,
+            quote.market_cap,
+            quote.previous_close,
+            quote.currency,
+        )
+        return quote
 
     def _fetch_company_profile(self, ticker: str) -> tuple[str | None, str | None]:
+        LOGGER.debug("Fetching yfinance company profile for %s", ticker)
         tk = yf.Ticker(ticker)
         info = self._quiet_call(lambda: getattr(tk, "info", None))
         if not isinstance(info, dict):
+            LOGGER.debug("yfinance company profile for %s returned no dict payload", ticker)
             return None, None
         company_name = info.get("longName") or info.get("shortName")
         raw_currency = info.get("currency")
         currency = str(raw_currency).upper().strip() if raw_currency else None
+        LOGGER.debug("Fetched yfinance company profile for %s: company_name=%s currency=%s", ticker, company_name, currency)
         return company_name, currency
 
     def fetch_asset_profile(self, ticker: str) -> dict[str, float | str | None]:
+        LOGGER.debug("Building asset profile for %s", ticker)
         try:
             quote = self._fetch_quote_live(ticker)
             company_name, currency = self._fetch_company_profile(ticker)
-            return {
+            profile = {
                 "price": quote.price,
                 "market_cap": quote.market_cap,
                 "company_name": company_name or quote.company_name,
                 "currency": currency or quote.currency,
             }
+            LOGGER.info("Asset profile ready for %s via yfinance", ticker)
+            return profile
         except Exception as primary_exc:
+            LOGGER.warning("Primary yfinance asset profile failed for %s: %s", ticker, primary_exc)
             # Attempt to fall back to FinancialModelingPrep (if API key provided)
             try:
                 fmp = self._fetch_company_profile_fmp(ticker)
                 if fmp:
+                    LOGGER.info("Asset profile ready for %s via FMP fallback", ticker)
                     return {
                         "price": fmp.get("price"),
                         "market_cap": fmp.get("market_cap"),
@@ -103,7 +124,7 @@ class MarketDataService:
                 LOGGER.exception("FMP fallback failed for %s", ticker)
 
             # Some symbols return incomplete metadata; return a minimal profile so sync can continue.
-            LOGGER.exception("Primary yfinance fetch failed for %s: %s", ticker, primary_exc)
+            LOGGER.exception("Returning empty asset profile for %s after all providers failed", ticker)
             return {
                 "price": None,
                 "market_cap": None,
@@ -120,11 +141,13 @@ class MarketDataService:
         """
         api_key = os.environ.get("FMP_API_KEY") or os.environ.get("FMP_API")
         if not api_key:
+            LOGGER.debug("Skipping FMP profile fetch for %s because no API key is configured", ticker)
             return None
 
         base = "https://financialmodelingprep.com/api/v3"
         out: dict[str, object] = {}
         ticker_up = str(ticker or "").upper().strip()
+        LOGGER.debug("Fetching FMP profile for %s", ticker_up)
         try:
             # Profile
             resp = requests.get(f"{base}/profile/{ticker_up}", params={"apikey": api_key}, timeout=10)
@@ -168,6 +191,7 @@ class MarketDataService:
 
             return out
         except Exception:
+            LOGGER.exception("FMP profile fetch failed for %s", ticker_up)
             return None
 
     def _fetch_fx_live_to_usd(self, currencies: Iterable[str]) -> dict[str, float]:
@@ -192,12 +216,14 @@ class MarketDataService:
         cutoff_list = sorted(set(cutoffs))
         cutoff_keys = [c.isoformat() for c in cutoff_list]
         prices: dict[str, dict[date, float | None]] = {}
+        ticker_set = sorted({t.upper().strip() for t in tickers})
+
+        LOGGER.debug("Fetching cutoff prices for %d tickers across %d cutoffs", len(ticker_set), len(cutoff_list))
 
         cache_data = self.cache.load()
         cached_cutoffs = cache_data.get("cutoff_prices", {}) if isinstance(cache_data.get("cutoff_prices", {}), dict) else {}
         cache_changed = False
 
-        ticker_set = sorted({t.upper().strip() for t in tickers})
         missing_tickers: list[str] = []
         ticker_missing_keys: dict[str, list[str]] = {}
 
@@ -206,6 +232,14 @@ class MarketDataService:
             ticker_cached = cached_cutoffs.get(ticker, {}) if isinstance(cached_cutoffs.get(ticker, {}), dict) else {}
             missing_cutoff_keys = [k for k in cutoff_keys if k not in ticker_cached]
             ticker_missing_keys[ticker] = missing_cutoff_keys
+
+            if len(missing_cutoff_keys) != len(cutoff_keys):
+                LOGGER.debug(
+                    "Cutoff price cache hit for %s: %d/%d values cached",
+                    ticker,
+                    len(cutoff_keys) - len(missing_cutoff_keys),
+                    len(cutoff_keys),
+                )
 
             for cutoff in cutoff_list:
                 key = cutoff.isoformat()
@@ -220,6 +254,7 @@ class MarketDataService:
             prices[ticker] = ticker_prices
 
         if missing_tickers:
+            LOGGER.debug("Loading historical prices for %d tickers from yfinance: %s", len(missing_tickers), ", ".join(missing_tickers))
             try:
                 history = self._quiet_call(
                     yf.download,
@@ -232,6 +267,7 @@ class MarketDataService:
                     threads=True,
                 )
             except Exception:
+                LOGGER.exception("Historical price download failed for tickers: %s", ", ".join(missing_tickers))
                 history = None
 
             for ticker in missing_tickers:
@@ -274,12 +310,16 @@ class MarketDataService:
                 cache_changed = True
 
         if cache_changed:
+            LOGGER.debug("Writing cutoff price cache for %d tickers", len(cached_cutoffs))
             cache_data["cutoff_prices"] = cached_cutoffs
             self.cache.save(cache_data)
 
         return prices
 
     def refresh_snapshot(self, tickers: Iterable[str], currencies: Iterable[str]) -> Snapshot:
+        ticker_list = [str(t).upper().strip() for t in tickers]
+        currency_list = [str(c).upper().strip() for c in currencies]
+        LOGGER.debug("Refreshing market snapshot for %d tickers and %d currencies", len(ticker_list), len(currency_list))
         cache_data = self.cache.load()
         cached_quotes = cache_data.get("quotes", {})
         cached_fx = cache_data.get("fx", {})
@@ -288,7 +328,6 @@ class MarketDataService:
         online = True
         stale_tickers: set[str] = set()
 
-        ticker_list = [str(t).upper().strip() for t in tickers]
         max_workers = max(1, min(8, len(ticker_list)))
 
         def _fetch_one(ticker: str) -> tuple[str, Quote | None]:
@@ -307,6 +346,7 @@ class MarketDataService:
                 if quote is None or quote.price is None:
                     online = False
                     stale_tickers.add(quote_ticker)
+                    LOGGER.debug("Using cached quote for %s because live fetch was unavailable", quote_ticker)
                     quotes[quote_ticker] = Quote(
                         price=raw_quote.get("price"),
                         market_cap=raw_quote.get("market_cap"),
@@ -323,15 +363,19 @@ class MarketDataService:
                     company_name=raw_quote.get("company_name") or quote.company_name,
                     currency=raw_quote.get("currency") or quote.currency,
                 )
+                LOGGER.debug("Live quote refreshed for %s", quote_ticker)
 
         try:
-            fx_to_usd = self._fetch_fx_live_to_usd(currencies)
+            LOGGER.debug("Fetching live FX rates for currencies: %s", ", ".join(sorted(set(currency_list))) or "USD")
+            fx_to_usd = self._fetch_fx_live_to_usd(currency_list)
         except Exception:
             online = False
+            LOGGER.exception("FX fetch failed; falling back to cached FX data")
             fx_to_usd = {k: float(v) for k, v in cached_fx.items()} if cached_fx else {"USD": 1.0}
 
         serializable = dict(cache_data)
         serializable["quotes"] = {k: asdict(v) for k, v in quotes.items()}
         serializable["fx"] = fx_to_usd
+        LOGGER.debug("Persisting refreshed snapshot cache with %d quotes and %d FX rates", len(quotes), len(fx_to_usd))
         self.cache.save(serializable)
         return Snapshot(quotes=quotes, fx_to_usd=fx_to_usd, online=online, stale_tickers=stale_tickers)
