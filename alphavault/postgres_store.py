@@ -787,7 +787,7 @@ class PostgresStore:
                     text("""
                     INSERT INTO public.ai_analysis_reports
                     (ticker, analysis_type, model, prompt_summary, report_md, inputs, run_by, created_at, expires_at)
-                    VALUES (:ticker, :analysis_type, :model, :prompt_summary, :report_md, :inputs::jsonb, :run_by, :created_at, :expires_at)
+                    VALUES (:ticker, :analysis_type, :model, :prompt_summary, :report_md, CAST(:inputs AS jsonb), :run_by, :created_at, :expires_at)
                     RETURNING id
                     """),
                     {
@@ -847,7 +847,7 @@ class PostgresStore:
                             text("""
                             INSERT INTO public.ai_analysis_reports
                             (ticker, analysis_type, model, prompt_summary, report_md, inputs, run_by, created_at, expires_at)
-                            VALUES (:ticker, :analysis_type, :model, :prompt_summary, :report_md, :inputs::jsonb, :run_by, :created_at, :expires_at)
+                            VALUES (:ticker, :analysis_type, :model, :prompt_summary, :report_md, CAST(:inputs AS jsonb), :run_by, :created_at, :expires_at)
                             RETURNING id
                             """),
                             {
