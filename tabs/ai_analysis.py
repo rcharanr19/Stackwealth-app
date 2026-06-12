@@ -61,18 +61,57 @@ def _extract_statement_value(frame: pd.DataFrame | None, row_names: list[str]) -
 def _fetch_yahoo_financial_profile(symbol: str) -> dict[str, Any]:
     LOGGER.debug("Building Yahoo financial profile for %s", symbol)
     ticker = yf.Ticker(symbol)
-    info = ticker.info or {}
-    financials = getattr(ticker, "financials", None)
-    balance_sheet = getattr(ticker, "balance_sheet", None)
-    cashflow = getattr(ticker, "cashflow", None)
+    try:
+        info = ticker.info or {}
+    except Exception as exc:
+        LOGGER.warning("Yahoo info fetch failed for %s; continuing with minimal profile: %s", symbol, exc)
+        info = {}
+
+    financials = None
+    balance_sheet = None
+    cashflow = None
+    try:
+        financials = getattr(ticker, "financials", None)
+    except Exception as exc:
+        LOGGER.debug("Yahoo financials fetch failed for %s: %s", symbol, exc)
+    try:
+        balance_sheet = getattr(ticker, "balance_sheet", None)
+    except Exception as exc:
+        LOGGER.debug("Yahoo balance sheet fetch failed for %s: %s", symbol, exc)
+    try:
+        cashflow = getattr(ticker, "cashflow", None)
+    except Exception as exc:
+        LOGGER.debug("Yahoo cash flow fetch failed for %s: %s", symbol, exc)
+
+    fast_info = {}
+    try:
+        fast_info = getattr(ticker, "fast_info", None) or {}
+    except Exception as exc:
+        LOGGER.debug("Yahoo fast_info fetch failed for %s: %s", symbol, exc)
+
+    history_price = None
+    try:
+        history = ticker.history(period="5d")
+        if not history.empty and "Close" in history:
+            close_series = history["Close"].dropna()
+            if not close_series.empty:
+                history_price = _safe_float(close_series.iloc[-1])
+    except Exception as exc:
+        LOGGER.debug("Yahoo history fetch failed for %s: %s", symbol, exc)
 
     profile = {
         "ticker": symbol,
         "source": "yfinance",
         "company_name": info.get("longName") or info.get("shortName"),
-        "currency": str(info.get("currency") or "").upper().strip() or None,
-        "price": _safe_float(info.get("currentPrice") or info.get("regularMarketPrice")),
-        "market_cap": _safe_float(info.get("marketCap") or info.get("mktCap")),
+        "currency": str((fast_info.get("currency") or info.get("currency") or "")).upper().strip() or None,
+        "price": _safe_float(
+            fast_info.get("lastPrice")
+            or fast_info.get("last_price")
+            or info.get("currentPrice")
+            or info.get("regularMarketPrice")
+            or history_price
+        ),
+        "market_cap": _safe_float(fast_info.get("marketCap") or info.get("marketCap") or info.get("mktCap")),
         "trailingPE": _safe_float(info.get("trailingPE") or info.get("trailingPe") or info.get("pe")),
         "forwardPE": _safe_float(info.get("forwardPE")),
         "operating_cash_flow": _extract_statement_value(

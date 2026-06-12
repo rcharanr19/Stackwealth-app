@@ -542,26 +542,58 @@ def main() -> None:
     with tab3:
         st.subheader("AI Transcript Mosaic")
         mosaic_ticker = st.text_input("Ticker", key="mosaic_ticker").upper().strip()
+        cached_mosaic = None
+        latest_transcript = None
+
+        if mosaic_ticker:
+            try:
+                cached_mosaic = db.get_latest_ai_report(mosaic_ticker, "transcript_mosaic")
+            except Exception:
+                LOGGER.exception("Failed to load cached transcript mosaic report")
+
+            try:
+                latest_transcript = db.get_latest_transcript(mosaic_ticker)
+            except Exception:
+                LOGGER.exception("Failed to load latest transcript for transcript mosaic")
+
+        if cached_mosaic and cached_mosaic.get("report_md"):
+            ts = _fmt_iso_ts(cached_mosaic.get("created_at"))
+            title = "Latest Saved Transcript Mosaic" + (f" — Generated {ts}" if ts else "")
+            st.subheader(title)
+            st.markdown(cached_mosaic.get("report_md") or "")
+
         transcript_file = st.file_uploader("Upload earnings transcript (.txt)", type=["txt"], key="mosaic_file")
 
-        can_process = bool(mosaic_ticker and transcript_file is not None)
+        uploaded_transcript_text = ""
+        if transcript_file is not None:
+            try:
+                uploaded_transcript_text = transcript_file.getvalue().decode("utf-8", errors="ignore")
+            except Exception:
+                uploaded_transcript_text = ""
+
+        latest_transcript_text = ""
+        if latest_transcript and latest_transcript.get("content"):
+            latest_transcript_text = str(latest_transcript.get("content") or "").strip()
+
+        can_process = bool(mosaic_ticker and (uploaded_transcript_text.strip() or latest_transcript_text))
         if st.button("Run Transcript Mosaic Analysis", key="run_mosaic", disabled=not can_process, width="stretch"):
             try:
-                transcript_text = transcript_file.getvalue().decode("utf-8", errors="ignore")
+                transcript_text = uploaded_transcript_text.strip() or latest_transcript_text
                 if not transcript_text.strip():
-                    st.error("The uploaded transcript appears to be empty.")
+                    st.error("Upload a transcript or save one for this ticker before running the analysis.")
                 else:
-                    # persist transcript first (best-effort)
+                    # persist uploaded transcript first (best-effort)
                     transcript_id = None
-                    try:
-                        transcript_id = db.insert_transcript(
-                            ticker=mosaic_ticker or None,
-                            filename=getattr(transcript_file, "name", None),
-                            content=transcript_text,
-                            source="upload",
-                        )
-                    except Exception:
-                        LOGGER.exception("Failed to persist uploaded transcript; continuing without transcript id.")
+                    if transcript_file is not None and uploaded_transcript_text.strip():
+                        try:
+                            transcript_id = db.insert_transcript(
+                                ticker=mosaic_ticker or None,
+                                filename=getattr(transcript_file, "name", None),
+                                content=uploaded_transcript_text,
+                                source="upload",
+                            )
+                        except Exception:
+                            LOGGER.exception("Failed to persist uploaded transcript; continuing without transcript id.")
 
                     with st.spinner("Running transcript mosaic analysis..."):
                         report = get_transcript_mosaic_analysis(mosaic_ticker, transcript_text)
@@ -733,6 +765,10 @@ def main() -> None:
                             st.error("FMP API key is missing or invalid. Please set `FMP_API_KEY` in Streamlit secrets.")
                         elif "empty data" in msg or "endpoint" in msg:
                             st.error(f"Could not load FMP financial statements for {selected_ticker}. Please verify ticker/API key and try again.")
+                        elif any(k in msg for k in ("yfinance", "yahoo", "rate limited", "too many requests")):
+                            st.error(
+                                "Yahoo Finance rate-limited the fallback market-data lookup. Try again later or pick a ticker supported by FMP."
+                            )
                         elif any(k in msg for k in ("503", "unavailable", "high demand", "too many requests", "rate limit", "429")):
                             st.error(
                                 "AI service temporarily overloaded (503/rate-limit). Try again in a few minutes. "
