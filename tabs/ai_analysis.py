@@ -397,45 +397,47 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
     }
 
 
+
+def generate_portfolio_ai_overview(payload: dict[str, Any]) -> str:
+    """Generate a portfolio-level institutional AI Overview report.
+
+    `payload` should follow the portfolio_overview_input contract described in streamlit_app.
+    This function returns the generated markdown string.
+    """
+    symbol = "PORTFOLIO"
+    # Keep prompt concise and structured — LLM used for synthesis only.
+    safe_payload = json.dumps(payload, indent=2, default=str)
+    prompt = f"""
+You are the Lead Investment Architect for a disciplined institutional allocator.
+Do not use platitudes. Produce a rigorous, evidence-based portfolio evaluation for the provided portfolio payload.
+
+REQUIRED OUTPUT SECTIONS (use these exact headers):
+### 1. High-Level Portfolio Vital Signs
+### 2. Multi-Period CAGR Projections (3-Year, 5-Year, 10-Year)
+### 3. Structural Risk Audit & "What to Watch Out For"
+### 4. Capital Efficiency & The "Economic Spread" Matrix
+### 5. Tactical Rebalancing Suggestions
+
+INPUT_PAYLOAD_JSON:
+{safe_payload}
+
+Output rules:
+- Use numeric values from the payload when possible and cite ticker-level lines.
+- Provide 1 table for section 2 and 1 table for section 4.
+- Keep bullets short (max 2-3 lines).
+- Do NOT provide price targets or broad market commentary.
+""".strip()
+
+    client = _gemini_client()
+    try:
+        response = _gemini_generate_with_retries(client, prompt, models=[get_model_name()])
+    except Exception:
+        raise
+    return _response_text(response)
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def generate_comparative_investment_thesis(
-    
-    def generate_portfolio_ai_overview(payload: dict[str, Any]) -> str:
-        """Generate a portfolio-level institutional AI Overview report.
-
-        `payload` should follow the portfolio_overview_input contract described in streamlit_app.
-        This function returns the generated markdown string.
-        """
-        symbol = "PORTFOLIO"
-        # Keep prompt concise and structured — LLM used for synthesis only.
-        safe_payload = json.dumps(payload, indent=2, default=str)
-        prompt = f"""
-    You are the Lead Investment Architect for a disciplined institutional allocator.
-    Do not use platitudes. Produce a rigorous, evidence-based portfolio evaluation for the provided portfolio payload.
-
-    REQUIRED OUTPUT SECTIONS (use these exact headers):
-    ### 1. High-Level Portfolio Vital Signs
-    ### 2. Multi-Period CAGR Projections (3-Year, 5-Year, 10-Year)
-    ### 3. Structural Risk Audit & "What to Watch Out For"
-    ### 4. Capital Efficiency & The "Economic Spread" Matrix
-    ### 5. Tactical Rebalancing Suggestions
-
-    INPUT_PAYLOAD_JSON:
-    {safe_payload}
-
-    Output rules:
-    - Use numeric values from the payload when possible and cite ticker-level lines.
-    - Provide 1 table for section 2 and 1 table for section 4.
-    - Keep bullets short (max 2-3 lines).
-    - Do NOT provide price targets or broad market commentary.
-    """.strip()
-
-        client = _gemini_client()
-        try:
-            response = _gemini_generate_with_retries(client, prompt, models=[get_model_name()])
-        except Exception:
-            raise
-        return _response_text(response)
     ticker: str,
     allocation_details: dict[str, Any],
     financial_profile: dict[str, Any],
