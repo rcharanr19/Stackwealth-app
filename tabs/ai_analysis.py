@@ -120,11 +120,51 @@ except Exception:
     edgar = None
 
 
+def _configure_edgar_user_agent() -> None:
+    """Configure a descriptive User-Agent for EDGAR access using secrets or env var.
+
+    SEC prefers a User-Agent string with contact information. The contact email
+    should be placed in Streamlit secrets as `EDGAR_CONTACT_EMAIL` or in the
+    environment variable `EDGAR_CONTACT_EMAIL`.
+    """
+    try:
+        contact = str(st.secrets.get("EDGAR_CONTACT_EMAIL", "") or os.environ.get("EDGAR_CONTACT_EMAIL", "")).strip()
+    except Exception:
+        contact = str(os.environ.get("EDGAR_CONTACT_EMAIL", "")).strip()
+
+    if contact:
+        ua = f"Stackwealth-App/1.0 (+{contact})"
+    else:
+        ua = "Stackwealth-App/1.0 (contact not-provided)"
+
+    # If edgartools exposes a setter, try to use it.
+    try:
+        if edgar and hasattr(edgar, "set_user_agent"):
+            try:
+                edgar.set_user_agent(ua)
+            except Exception:
+                LOGGER.debug("edgartools.set_user_agent unavailable or failed")
+    except Exception:
+        LOGGER.debug("Failed to configure edgartools user agent via edgartools API")
+
+    # Also expose via environment for libraries that read a custom header env var
+    try:
+        os.environ["EDGAR_USER_AGENT"] = ua
+    except Exception:
+        pass
+
+
 def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
     """Best-effort SEC extraction using EdgarTools; returns minimal numeric fields or None.
 
     This function is cached via Streamlit's cache_data where called by the app layer.
     """
+    # Ensure we set a descriptive User-Agent before making any EDGAR requests
+    try:
+        _configure_edgar_user_agent()
+    except Exception:
+        LOGGER.debug("Failed to configure EDGAR user-agent hook")
+
     if not edgar:
         return None
     try:
