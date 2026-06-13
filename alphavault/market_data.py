@@ -84,12 +84,24 @@ class MarketDataService:
     def _fetch_company_profile(self, ticker: str) -> tuple[str | None, str | None]:
         LOGGER.debug("Fetching yfinance company profile for %s", ticker)
         tk = yf.Ticker(ticker)
-        info = self._quiet_call(lambda: getattr(tk, "info", None))
-        if not isinstance(info, dict):
-            LOGGER.debug("yfinance company profile for %s returned no dict payload", ticker)
-            return None, None
-        company_name = info.get("longName") or info.get("shortName")
-        raw_currency = info.get("currency")
+        # Prefer lightweight fast_info for company metadata to avoid heavy .info network calls
+        fast_info = self._quiet_call(lambda: getattr(tk, "fast_info", None)) or {}
+        company_name = None
+        raw_currency = None
+        if isinstance(fast_info, dict):
+            company_name = fast_info.get("longName") or fast_info.get("shortName") or fast_info.get("short_name")
+            raw_currency = fast_info.get("currency")
+
+        # Fallback to (possibly heavier) info only if fast_info didn't provide metadata
+        if not company_name or not raw_currency:
+            try:
+                info = self._quiet_call(lambda: getattr(tk, "info", None)) or {}
+                if isinstance(info, dict):
+                    company_name = company_name or info.get("longName") or info.get("shortName")
+                    raw_currency = raw_currency or info.get("currency")
+            except Exception:
+                LOGGER.debug("yfinance company profile fallback info fetch failed for %s", ticker)
+
         currency = str(raw_currency).upper().strip() if raw_currency else None
         LOGGER.debug("Fetched yfinance company profile for %s: company_name=%s currency=%s", ticker, company_name, currency)
         return company_name, currency

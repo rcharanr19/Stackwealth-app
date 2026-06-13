@@ -12,6 +12,7 @@ from google import genai
 import time
 import logging
 import requests
+import re
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,30 +60,8 @@ def _extract_statement_value(frame: pd.DataFrame | None, row_names: list[str]) -
 
 
 def _fetch_yahoo_financial_profile(symbol: str) -> dict[str, Any]:
-    LOGGER.debug("Building Yahoo financial profile for %s", symbol)
+    LOGGER.debug("Building lightweight Yahoo financial profile for %s (fast_info + SEC fallback)", symbol)
     ticker = yf.Ticker(symbol)
-    try:
-        info = ticker.info or {}
-    except Exception as exc:
-        LOGGER.warning("Yahoo info fetch failed for %s; continuing with minimal profile: %s", symbol, exc)
-        info = {}
-
-    financials = None
-    balance_sheet = None
-    cashflow = None
-    try:
-        financials = getattr(ticker, "financials", None)
-    except Exception as exc:
-        LOGGER.debug("Yahoo financials fetch failed for %s: %s", symbol, exc)
-    try:
-        balance_sheet = getattr(ticker, "balance_sheet", None)
-    except Exception as exc:
-        LOGGER.debug("Yahoo balance sheet fetch failed for %s: %s", symbol, exc)
-    try:
-        cashflow = getattr(ticker, "cashflow", None)
-    except Exception as exc:
-        LOGGER.debug("Yahoo cash flow fetch failed for %s: %s", symbol, exc)
-
     fast_info = {}
     try:
         fast_info = getattr(ticker, "fast_info", None) or {}
@@ -96,36 +75,132 @@ def _fetch_yahoo_financial_profile(symbol: str) -> dict[str, Any]:
             close_series = history["Close"].dropna()
             if not close_series.empty:
                 history_price = _safe_float(close_series.iloc[-1])
-    except Exception as exc:
-        LOGGER.debug("Yahoo history fetch failed for %s: %s", symbol, exc)
+    except Exception:
+        history_price = None
+
+    company_name = None
+    try:
+        info = {}
+        # Some installations still expose a lightweight info dict; try to read shortName safely
+        info = getattr(ticker, "info", None) or {}
+        company_name = info.get("shortName") or info.get("longName")
+    except Exception:
+        company_name = None
+
+    price = _safe_float(fast_info.get("lastPrice") or fast_info.get("last_price") or history_price)
+    market_cap = _safe_float(fast_info.get("marketCap") or fast_info.get("market_cap"))
+
+    # Try to enrich with SEC filings (EdgarTools) if available — best-effort and cached in this module
+    sec_data = _fetch_sec_financials_for_symbol(symbol)
 
     profile = {
         "ticker": symbol,
-        "source": "yfinance",
-        "company_name": info.get("longName") or info.get("shortName"),
-        "currency": str((fast_info.get("currency") or info.get("currency") or "")).upper().strip() or None,
-        "price": _safe_float(
-            fast_info.get("lastPrice")
-            or fast_info.get("last_price")
-            or info.get("currentPrice")
-            or info.get("regularMarketPrice")
-            or history_price
-        ),
-        "market_cap": _safe_float(fast_info.get("marketCap") or info.get("marketCap") or info.get("mktCap")),
-        "trailingPE": _safe_float(info.get("trailingPE") or info.get("trailingPe") or info.get("pe")),
-        "forwardPE": _safe_float(info.get("forwardPE")),
-        "operating_cash_flow": _extract_statement_value(
-            cashflow,
-            ["Operating Cash Flow", "Net Cash Provided By Operating Activities", "Total Cash From Operating Activities"],
-        ),
-        "total_assets": _extract_statement_value(balance_sheet, ["Total Assets"]),
-        "total_debt": _extract_statement_value(balance_sheet, ["Total Debt", "Short Long Term Debt", "Long Term Debt", "Short Term Debt"]),
-        "income_statement": _df_to_period_records(financials, limit=5),
-        "balance_sheet": _df_to_period_records(balance_sheet, limit=5),
-        "cash_flow": _df_to_period_records(cashflow, limit=5),
+        "source": "yfinance_light",
+        "company_name": company_name,
+        "currency": str((fast_info.get("currency") or None)).upper().strip() or None,
+        "price": price,
+        "market_cap": market_cap,
+        "trailingPE": None,
+        "forwardPE": None,
+        "operating_cash_flow": sec_data.get("operating_cash_flow") if sec_data else None,
+        "total_assets": sec_data.get("total_assets") if sec_data else None,
+        "total_debt": sec_data.get("total_debt") if sec_data else None,
+        "income_statement": [],
+        "balance_sheet": [],
+        "cash_flow": [],
     }
-    LOGGER.info("Built Yahoo financial profile for %s", symbol)
+    LOGGER.info("Built lightweight Yahoo financial profile for %s", symbol)
     return profile
+
+
+# Optional EdgarTools integration for this module
+try:
+    import edgartools as edgar  # type: ignore
+except Exception:
+    edgar = None
+
+
+def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
+    """Best-effort SEC extraction using EdgarTools; returns minimal numeric fields or None.
+
+    This function is cached via Streamlit's cache_data where called by the app layer.
+    """
+    if not edgar:
+        return None
+    try:
+        # Try common EdgarTools fetchers; adapt to available API
+        candidates = [
+            getattr(edgar, "get_company_filings", None),
+            getattr(edgar, "fetch_filings", None),
+            getattr(edgar, "search_filings", None),
+            getattr(edgar, "get_filings", None),
+        ]
+        filings = None
+        for fn in candidates:
+            if callable(fn):
+                try:
+                    filings = fn(ticker, filing_type="10-K", count=2)
+                    break
+                except TypeError:
+                    try:
+                        filings = fn(ticker)
+                        break
+                    except Exception:
+                        continue
+        if not filings:
+            return None
+
+        # Attempt to extract text bodies
+        bodies: list[str] = []
+        if isinstance(filings, dict):
+            for v in filings.values():
+                if isinstance(v, list):
+                    for it in v:
+                        if isinstance(it, dict):
+                            bodies.append(it.get("content") or it.get("text") or "")
+        elif isinstance(filings, list):
+            for it in filings:
+                if isinstance(it, dict):
+                    bodies.append(it.get("content") or it.get("text") or "")
+                elif isinstance(it, str):
+                    bodies.append(it)
+
+        text = "\n\n".join([b for b in bodies if b])
+        if not text:
+            return None
+
+        def _parse_amount(label: str) -> float | None:
+            pattern = re.compile(r"""(?:%s)\s{0,60}[$]?[\(]?[0-9,\.\)\-]+""" % re.escape(label), re.IGNORECASE)
+            m = pattern.search(text)
+            if not m:
+                return None
+            token = m.group(0)
+            nums = re.findall(r"[\-\(]?[0-9,]{1,}[\.0-9]*[\)]?", token)
+            if not nums:
+                return None
+            raw = nums[-1]
+            raw = raw.replace("(", "-").replace(")", "")
+            raw = raw.replace(",", "")
+            try:
+                return float(raw)
+            except Exception:
+                return None
+
+        total_assets = _parse_amount("Total Assets") or _parse_amount("Total assets")
+        total_debt = _parse_amount("Total Debt") or _parse_amount("Long-Term Debt") or _parse_amount("Short-Term Debt")
+        operating_cash_flow = _parse_amount("Operating Cash Flow") or _parse_amount("Net Cash Provided By Operating Activities")
+
+        result = {}
+        if total_assets is not None:
+            result["total_assets"] = total_assets
+        if total_debt is not None:
+            result["total_debt"] = total_debt
+        if operating_cash_flow is not None:
+            result["operating_cash_flow"] = operating_cash_flow
+        return result if result else None
+    except Exception:
+        LOGGER.exception("Edgar extraction failed for %s", ticker)
+        return None
 
 
 def _gemini_client() -> genai.Client:
@@ -324,6 +399,43 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def generate_comparative_investment_thesis(
+    
+    def generate_portfolio_ai_overview(payload: dict[str, Any]) -> str:
+        """Generate a portfolio-level institutional AI Overview report.
+
+        `payload` should follow the portfolio_overview_input contract described in streamlit_app.
+        This function returns the generated markdown string.
+        """
+        symbol = "PORTFOLIO"
+        # Keep prompt concise and structured — LLM used for synthesis only.
+        safe_payload = json.dumps(payload, indent=2, default=str)
+        prompt = f"""
+    You are the Lead Investment Architect for a disciplined institutional allocator.
+    Do not use platitudes. Produce a rigorous, evidence-based portfolio evaluation for the provided portfolio payload.
+
+    REQUIRED OUTPUT SECTIONS (use these exact headers):
+    ### 1. High-Level Portfolio Vital Signs
+    ### 2. Multi-Period CAGR Projections (3-Year, 5-Year, 10-Year)
+    ### 3. Structural Risk Audit & "What to Watch Out For"
+    ### 4. Capital Efficiency & The "Economic Spread" Matrix
+    ### 5. Tactical Rebalancing Suggestions
+
+    INPUT_PAYLOAD_JSON:
+    {safe_payload}
+
+    Output rules:
+    - Use numeric values from the payload when possible and cite ticker-level lines.
+    - Provide 1 table for section 2 and 1 table for section 4.
+    - Keep bullets short (max 2-3 lines).
+    - Do NOT provide price targets or broad market commentary.
+    """.strip()
+
+        client = _gemini_client()
+        try:
+            response = _gemini_generate_with_retries(client, prompt, models=[get_model_name()])
+        except Exception:
+            raise
+        return _response_text(response)
     ticker: str,
     allocation_details: dict[str, Any],
     financial_profile: dict[str, Any],

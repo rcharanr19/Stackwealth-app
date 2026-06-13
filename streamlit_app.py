@@ -9,6 +9,7 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 import yfinance as yf
+import re
 import json
 
 from alphavault.cache_store import CacheStore
@@ -21,13 +22,23 @@ from tabs.ai_analysis import (
     get_reverse_dcf_analysis,
     get_transcript_mosaic_analysis,
     get_model_name,
+    generate_portfolio_ai_overview,
     fetch_fmp_financial_profile,
     generate_comparative_investment_thesis,
+    FMP_SUPPORTED_TICKERS,
+    _fetch_sec_financials_for_symbol,
 )
+from tabs.ai_analysis import FMP_SUPPORTED_TICKERS
 
 
 configure_logging()
 LOGGER = logging.getLogger(__name__)
+
+# Optional EdgarTools integration (open-source SEC wrapper). If unavailable, fallback safely.
+try:
+    import edgartools as edgar  # type: ignore
+except Exception:
+    edgar = None
 
 APP_TITLE = "StackWealth"
 PORTFOLIO_JSON = Path("data/portfolio.json")
@@ -110,6 +121,169 @@ def _fmt_iso_ts(ts: str | None) -> str | None:
         return str(ts)
 
 
+def _hash_portfolio_snapshot(payload: dict[str, Any]) -> str:
+    try:
+        s = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _brief_portfolio_hash(metrics: pd.DataFrame, portfolio_summary: pd.DataFrame, profile: dict[str, Any]) -> str:
+    """Compute a lightweight, deterministic hash from key portfolio fields without external API calls.
+
+    Uses ticker, shares, avg_cost, current_value and cash to detect snapshot changes for cache staleness.
+    """
+    try:
+        rows = []
+        frame = metrics if not metrics.empty else portfolio_summary
+        for _, r in frame.iterrows():
+            rows.append({
+                "ticker": str(r.get("ticker")),
+                "shares": float(r.get("shares") or 0.0),
+                "avg_cost": float(r.get("avg_cost") or 0.0),
+                "current_value": float(r.get("equity_usd") or r.get("current_value") or 0.0),
+            })
+        brief = {"rows": sorted(rows, key=lambda x: x["ticker"]), "cash_usd": float(profile.get("cash_usd") or 0.0)}
+        s = json.dumps(brief, sort_keys=True, separators=(",", ":"), default=str)
+        return hashlib.sha256(s.encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
+
+
+def build_portfolio_overview_input(metrics: pd.DataFrame, portfolio_summary: pd.DataFrame, profile: dict[str, Any]) -> dict[str, Any]:
+    """Construct the deterministic payload consumed by the portfolio overview generator."""
+    now_iso = datetime.utcnow().isoformat()
+
+    totals = {
+        "portfolio_value_usd": float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0,
+        "cash_usd": float(profile.get("cash_usd") or 0.0) if isinstance(profile, dict) else 0.0,
+    }
+    totals["cash_weight_pct"] = (totals["cash_usd"] / totals["portfolio_value_usd"] * 100.0) if totals["portfolio_value_usd"] > 0 else 0.0
+
+    # Build holdings list from metrics (fallback to portfolio_summary)
+    frame = metrics if not metrics.empty else portfolio_summary
+    holdings: list[dict[str, Any]] = []
+    for _, r in frame.iterrows():
+        holdings.append(
+            {
+                "ticker": str(r.get("ticker")),
+                "shares": float(r.get("shares") or 0.0),
+                "avg_cost": float(r.get("avg_cost") or 0.0),
+                "cost_basis": float(r.get("cost_basis") or 0.0),
+                "current_price": float(r.get("current_price") or 0.0),
+                "current_value": float(r.get("equity_usd") or r.get("current_value") or 0.0),
+                "weight_pct": float(r.get("weight_pct") or 0.0),
+                "day_change_pct": float(r.get("last_day_change_pct") or 0.0),
+                "pnl_total_usd": float(r.get("pnl_usd") or 0.0),
+                "segment_exposure": r.get("segment") or r.get("company_name") or "Unknown",
+            }
+        )
+
+    # Compute simple ROIC/WACC proxies per ticker using lightweight yfinance fast_info only (avoid heavy financial endpoints)
+    economics_by_ticker: list[dict[str, Any]] = []
+    for h in holdings:
+        ticker = str(h.get("ticker") or "").upper().strip()
+        roic = None
+        wacc = None
+        # Lightweight market cap via yfinance.fast_info
+        try:
+            t = yf.Ticker(ticker)
+            fast = getattr(t, "fast_info", {}) or {}
+            mcap = _safe_float(fast.get("marketCap") or fast.get("market_cap") or fast.get("marketCap"))
+        except Exception:
+            mcap = None
+
+        # Prefer FMP data for supported tickers (free tier); otherwise use Edgar SEC extraction when available
+        ocf = None
+        total_assets = None
+        total_debt = None
+        try:
+            if ticker in FMP_SUPPORTED_TICKERS:
+                try:
+                    fp = fetch_fmp_financial_profile(ticker)
+                    # FMP returns lists for cash_flow and balance_sheet; extract most recent row if present
+                    cf = fp.get("cash_flow") or []
+                    bs = fp.get("balance_sheet") or []
+                    if isinstance(cf, list) and len(cf) > 0 and isinstance(cf[0], dict):
+                        ocf = _safe_float(cf[0].get("operatingCashFlow") or cf[0].get("operating_cash_flow") or cf[0].get("operatingCashflow"))
+                    if isinstance(bs, list) and len(bs) > 0 and isinstance(bs[0], dict):
+                        total_assets = _safe_float(bs[0].get("totalAssets") or bs[0].get("total_assets"))
+                        total_debt = _safe_float(bs[0].get("totalDebt") or bs[0].get("total_debt"))
+                except Exception:
+                    ocf = None
+                    total_assets = None
+                    total_debt = None
+            else:
+                # try SEC extraction via EdgarTools (best-effort)
+                # Prefer module-level Edgar helper when available, fallback to local fetcher
+                try:
+                    sec = None
+                    try:
+                        sec = _fetch_sec_financials_for_symbol(ticker)
+                    except Exception:
+                        sec = fetch_sec_financials_via_edgar(ticker)
+                    if sec:
+                        ocf = _safe_float(sec.get("operating_cash_flow"))
+                        total_assets = _safe_float(sec.get("total_assets"))
+                        total_debt = _safe_float(sec.get("total_debt"))
+                except Exception:
+                    ocf = None
+                    total_assets = None
+                    total_debt = None
+        except Exception:
+            ocf = None
+            total_assets = None
+            total_debt = None
+
+        # Compute ROIC if we have OCF and net invested capital
+        roic = None
+        try:
+            if ocf is not None and total_assets is not None and total_debt is not None and (total_assets - total_debt) > 0:
+                roic = (ocf / (total_assets - total_debt)) * 100.0
+        except Exception:
+            roic = None
+
+        # Deterministic WACC proxy by market cap band
+        if mcap is None:
+            wacc = 8.0
+        elif mcap >= 200_000_000_000:
+            wacc = 7.0
+        elif mcap >= 10_000_000_000:
+            wacc = 8.0
+        else:
+            wacc = 9.0
+
+        spread = None if roic is None else (roic - wacc)
+        economics_by_ticker.append({"ticker": ticker, "roic_pct": roic, "wacc_pct": wacc, "spread_pct": spread, "market_cap": mcap})
+
+    # Build projections using simple deterministic rules (placeholder numeric proxies)
+    # For handoff: cheaper model will refine these from fundamentals; keep deterministic defaults.
+    projections = {"3y": {"low": 0.0, "base": 0.0, "high": 0.0}, "5y": {"low": 0.0, "base": 0.0, "high": 0.0}, "10y": {"low": 0.0, "base": 0.0, "high": 0.0}}
+    # Weighted average of per-ticker simple proxy: use pnl_total_usd weight as short proxy for expected growth sensitivity
+    total_value = totals["portfolio_value_usd"] or 1.0
+    weighted_base = 0.0
+    for h in holdings:
+        w = float(h.get("weight_pct") or 0.0) / 100.0
+        # crude base proxy: 3% + (weighted pnl ratio)
+        base = 0.03 + max(min((h.get("pnl_total_usd") or 0.0) / max(h.get("cost_basis") or 1.0, 1.0), 0.20), -0.10)
+        weighted_base += w * base
+    projections["3y"]["base"] = round((1 + weighted_base) ** (1) - 1 if False else weighted_base * 100.0, 2)
+    projections["5y"]["base"] = round(weighted_base * 100.0, 2)
+    projections["10y"]["base"] = round(weighted_base * 100.0, 2)
+
+    payload = {
+        "generated_at_utc": now_iso,
+        "portfolio_hash": None,
+        "totals": totals,
+        "holdings": holdings,
+        "economics": {"by_ticker": economics_by_ticker, "portfolio_weighted_spread_pct": None},
+        "projections": projections,
+    }
+    payload["portfolio_hash"] = _hash_portfolio_snapshot(payload)
+    return payload
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_market_snapshot(tickers: tuple[str, ...]) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
@@ -118,12 +292,20 @@ def fetch_market_snapshot(tickers: tuple[str, ...]) -> pd.DataFrame:
         if not symbol:
             continue
         instrument = yf.Ticker(symbol)
-        info = instrument.info or {}
         fast_info = getattr(instrument, "fast_info", {}) or {}
-        price = _safe_float(fast_info.get("lastPrice"))
+        # Prefer fast_info for lightweight snapshot (avoids heavy network calls)
+        price = _safe_float(fast_info.get("lastPrice") or fast_info.get("last_price"))
         if price is None:
-            price = _safe_float(info.get("currentPrice"))
-        market_cap = _safe_float(info.get("marketCap"))
+            # fallback to a very small history request which is lighter than .info
+            try:
+                history = instrument.history(period="5d")
+                if not history.empty and "Close" in history:
+                    close_series = history["Close"].dropna()
+                    if not close_series.empty:
+                        price = _safe_float(close_series.iloc[-1])
+            except Exception:
+                price = None
+        market_cap = _safe_float(fast_info.get("marketCap") or fast_info.get("market_cap"))
         rows.append(
             {
                 "ticker": symbol,
@@ -441,6 +623,47 @@ def main() -> None:
             kpi1.metric("Current Value", f"${total_value:,.2f}")
             kpi2.metric("Total P&L", f"${total_open_pnl:,.2f}")
             kpi3.metric("Total P&L Margin", "N/A" if pnl_margin is None else f"{pnl_margin:+.2f}%")
+
+            # --- AI Overview: show latest saved report for the whole portfolio and allow regeneration ---
+            try:
+                cached_portfolio_overview = db.get_latest_ai_report("PORTFOLIO", "portfolio_overview")
+            except Exception:
+                cached_portfolio_overview = None
+
+            if cached_portfolio_overview and cached_portfolio_overview.get("report_md"):
+                ts = _fmt_iso_ts(cached_portfolio_overview.get("created_at"))
+                title = "Latest Saved AI Overview" + (f" — Generated {ts}" if ts else "")
+                # compute lightweight current hash to detect staleness without expensive enrichment
+                current_brief_hash = _brief_portfolio_hash(metrics, portfolio_summary, profile)
+                saved_inputs = cached_portfolio_overview.get("inputs") or {}
+                saved_hash = saved_inputs.get("portfolio_hash") if isinstance(saved_inputs, dict) else None
+                if saved_hash and current_brief_hash and saved_hash != current_brief_hash:
+                    title += " — Stale (snapshot changed)"
+                st.subheader(title)
+                st.markdown(cached_portfolio_overview.get("report_md") or "")
+
+            if st.button("Run AI Overview", key="run_ai_overview", width="stretch"):
+                try:
+                    with st.spinner("Building portfolio payload..."):
+                        payload = build_portfolio_overview_input(metrics, portfolio_summary, profile)
+                    with st.spinner("Generating portfolio overview (LLM)..."):
+                        report = generate_portfolio_ai_overview(payload)
+                    st.markdown(report)
+                    # persist AI report
+                    try:
+                        db.insert_ai_analysis_report(
+                            ticker="PORTFOLIO",
+                            analysis_type="portfolio_overview",
+                            model=get_model_name(),
+                            prompt_summary=None,
+                            report_md=report,
+                            inputs=payload,
+                            run_by=None,
+                        )
+                    except Exception:
+                        LOGGER.exception("Failed to persist portfolio overview report; continuing.")
+                except Exception as exc:
+                    st.error(f"AI Overview generation failed: {exc}")
 
             display = portfolio_summary[
                 [
