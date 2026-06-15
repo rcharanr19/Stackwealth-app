@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from typing import Iterable
 
@@ -11,6 +12,9 @@ from .models import Position, Quote, Transaction
 
 
 EPSILON = 0.0001
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _xnpv(rate: float, cashflows: list[tuple[date, float]]) -> float:
@@ -25,12 +29,14 @@ def _xnpv(rate: float, cashflows: list[tuple[date, float]]) -> float:
 
 def _xirr_fallback(cashflows: list[tuple[date, float]]) -> float | None:
     if not cashflows:
+        LOGGER.debug("XIRR fallback skipped because there are no cashflows")
         return None
 
     amounts = [amount for _, amount in cashflows]
     has_pos = any(a > 0 for a in amounts)
     has_neg = any(a < 0 for a in amounts)
     if not (has_pos and has_neg):
+        LOGGER.debug("XIRR fallback skipped because cashflows do not contain both positive and negative values")
         return None
 
     low, high = -0.99, 1.0
@@ -42,6 +48,7 @@ def _xirr_fallback(cashflows: list[tuple[date, float]]) -> float | None:
         f_high = _xnpv(high, cashflows)
 
     if np.sign(f_low) == np.sign(f_high):
+        LOGGER.debug("XIRR fallback could not bracket a solution")
         return None
 
     for _ in range(80):
@@ -61,11 +68,16 @@ def compute_xirr(transactions: Iterable[Transaction], terminal_value: float) -> 
     flows.append((date.today(), float(terminal_value)))
     flows.sort(key=lambda x: x[0])
 
+    LOGGER.debug("Computing XIRR for %d cashflows with terminal value %.2f", len(flows), float(terminal_value))
+
     amounts = [a for _, a in flows]
     if not (any(a > 0 for a in amounts) and any(a < 0 for a in amounts)):
+        LOGGER.debug("XIRR skipped because the cashflow set does not have both inflows and outflows")
         return None
 
-    return _xirr_fallback(flows)
+    result = _xirr_fallback(flows)
+    LOGGER.debug("XIRR computation result: %s", result)
+    return result
 
 
 def _sort_transaction_key(tx: Transaction) -> tuple:
@@ -139,6 +151,7 @@ def build_metrics_table(
     fx_to_usd: dict[str, float],
     stale_tickers: set[str] | None = None,
 ) -> pd.DataFrame:
+    LOGGER.debug("Building metrics table for %d positions and %d transactions", len(positions), len(transactions))
     rows: list[dict[str, float | str | None]] = []
     tx_by_ticker: dict[str, list[Transaction]] = {}
     stale_set = stale_tickers or set()
@@ -183,6 +196,12 @@ def build_metrics_table(
         unrealized_usd = unrealized_native * fx_rate if np.isfinite(unrealized_native) and np.isfinite(fx_rate) else np.nan
         total_usd = realized_usd + unrealized_usd if np.isfinite(realized_usd) and np.isfinite(unrealized_usd) else np.nan
 
+        # Compute cost-basis in native and USD so callers can display correct P&L
+        cost_basis_native = current_shares * avg_price if current_shares > 0 and avg_price is not None else 0.0 if current_shares <= 0 else np.nan
+        avg_cost_usd = avg_price * fx_rate if np.isfinite(avg_price) and np.isfinite(fx_rate) else np.nan
+        cost_basis_usd = cost_basis_native * fx_rate if np.isfinite(cost_basis_native) and np.isfinite(fx_rate) else np.nan
+        current_price_usd = price * fx_rate if np.isfinite(price) and np.isfinite(fx_rate) else np.nan
+
         terminal_value_native = equity_native if current_shares > 0 else 0.0
         xirr = compute_xirr(ticker_transactions, float(terminal_value_native) if np.isfinite(terminal_value_native) else 0.0)
 
@@ -192,10 +211,15 @@ def build_metrics_table(
                 "company_name": pos.company_name,
                 "shares": current_shares,
                 "avg_price": pos.avg_price,
+                # USD-normalized fields for display
+                "avg_cost": avg_cost_usd,
+                "cost_basis": cost_basis_usd,
                 "currency": pos.currency,
                 "current_price": price,
+                "current_price_usd": current_price_usd,
                 "market_cap": market_cap,
                 "equity_native": equity_native,
+                "cost_basis_native": cost_basis_native,
                 "realized_pnl_native": realized_native,
                 "unrealized_pnl_native": unrealized_native,
                 "unrealized_change_pct": unrealized_change_pct,
@@ -217,8 +241,12 @@ def build_metrics_table(
     total_usd = float(df["equity_usd"].sum(skipna=True)) if not df.empty else 0.0
     if total_usd > 0 and "equity_usd" in df:
         df["allocation_pct"] = (df["equity_usd"] / total_usd) * 100.0
+        df["weight_pct"] = df["allocation_pct"]
     else:
         df["allocation_pct"] = np.nan
+        df["weight_pct"] = np.nan
+
+    LOGGER.debug("Metrics table built with %d rows and total equity USD %.2f", len(df), total_usd)
 
     return df
 
@@ -230,6 +258,7 @@ def compute_portfolio_xirr(
     fx_to_usd: dict[str, float],
 ) -> float | None:
     """Compute blended portfolio XIRR with all cash flows normalized to USD."""
+    LOGGER.debug("Computing blended portfolio XIRR for %d transactions and %d positions", len(transactions), len(positions))
     currency_by_ticker: dict[str, str] = {p.ticker: p.currency for p in positions}
 
     # Convert each historical transaction to USD
@@ -253,7 +282,9 @@ def compute_portfolio_xirr(
             rate = fx_to_usd.get(pos.currency, 1.0)
             terminal_usd += pos.shares * q.price * rate
 
-    return compute_xirr(usd_transactions, terminal_usd)
+    result = compute_xirr(usd_transactions, terminal_usd)
+    LOGGER.debug("Blended portfolio XIRR result: %s", result)
+    return result
 
 
 def compute_portfolio_window_metrics(
@@ -344,6 +375,13 @@ def compute_portfolio_since_start_metrics(
     The change metric is a simple total return percentage:
     (ending value - baseline value) / baseline value.
     """
+    LOGGER.debug(
+        "Computing since-start portfolio metrics for %d positions and %d transactions (baseline=%s, baseline_value_usd=%.2f)",
+        len(positions),
+        len(transactions),
+        baseline_date.isoformat(),
+        float(baseline_value_usd),
+    )
     tracked = {t.upper().strip() for t in tracked_tickers if t}
     currency_by_ticker: dict[str, str] = {p.ticker: p.currency for p in positions}
 
@@ -357,6 +395,7 @@ def compute_portfolio_since_start_metrics(
             end_value_usd += pos.shares * q.price * rate
 
     if baseline_value_usd <= 0:
+        LOGGER.debug("Since-start metrics skipped because baseline_value_usd is not positive")
         return {"xirr": None, "change_pct": None}
 
     flows: list[tuple[date, float]] = [(baseline_date, -float(baseline_value_usd))]
@@ -373,7 +412,9 @@ def compute_portfolio_since_start_metrics(
 
     xirr = _xirr_fallback(flows)
     if xirr is None:
+        LOGGER.debug("Since-start XIRR unavailable; returning change_pct only")
         return {"xirr": None, "change_pct": ((end_value_usd - baseline_value_usd) / baseline_value_usd) * 100.0}
 
     change_pct = ((end_value_usd - baseline_value_usd) / baseline_value_usd) * 100.0
+    LOGGER.debug("Since-start metrics result: xirr=%s change_pct=%.2f end_value_usd=%.2f", xirr, change_pct, end_value_usd)
     return {"xirr": xirr, "change_pct": change_pct}

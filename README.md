@@ -9,6 +9,7 @@ StackWealth tracks a global, multi-currency equity portfolio with live market da
 - streamlit (web UI for Streamlit Community Cloud)
 - pandas, numpy, numpy-financial
 - jinja2 (required for pandas Styler rendering in Streamlit)
+- sqlalchemy, psycopg[binary] (required for the Streamlit PostgreSQL connection)
 - yfinance
 - pyinstaller
 
@@ -76,13 +77,30 @@ Add an app password in Streamlit Cloud secrets to keep the app private behind a 
 APP_PASSWORD = "your-strong-password"
 ```
 
+For the PostgreSQL connection used by Streamlit, configure `st.connection("postgresql", type="sql")` with these secrets keys. Use a dedicated trusted database role such as `stackwealth_service`, and grant it BYPASSRLS in PostgreSQL.
+
+```toml
+[connections.postgresql]
+type = "sql"
+dialect = "postgresql"
+driver = "psycopg"
+host = "your-project.supabase.co"
+port = 5432
+database = "postgres"
+username = "stackwealth_service"
+password = "your-database-password"
+sslmode = "require"
+```
+
+Keep `.streamlit/secrets.toml` out of source control. The repository already ignores it, and it should stay private.
+
 Robinhood sync now uses a popup login form in the app. Credentials are entered only when you click Sync and are not written to files, secrets, or logs.
 
 First-run behavior:
 
 - `portfolio.json` is treated as the baseline universe.
 - Only those baseline assets are used for the initial Robinhood sync.
-- The first completed sync persists initialization state in `data/alphavault.db`.
+- The first completed sync persists initialization state in PostgreSQL.
 
 Redeploy behavior:
 

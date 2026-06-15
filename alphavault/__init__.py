@@ -1,6 +1,7 @@
 """StackWealth package."""
 
 from .sqlite_store import SQLiteStore
+from .postgres_store import PostgresStore
 from .robinhood_sync import RobinhoodSyncService, SyncResult
 from .market_data import MarketDataService
 from .cache_store import CacheStore
@@ -10,6 +11,7 @@ from .logging_utils import configure_logging
 
 __all__ = [
     "SQLiteStore",
+    "PostgresStore",
     "RobinhoodSyncService",
     "SyncResult",
     "MarketDataService",

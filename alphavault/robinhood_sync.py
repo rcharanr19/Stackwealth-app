@@ -9,7 +9,6 @@ from typing import Callable, Any
 
 from .logging_utils import mask_account, mask_email
 from .market_data import MarketDataService
-from .sqlite_store import SQLiteStore
 
 
 @dataclass(slots=True)
@@ -24,7 +23,7 @@ SYNC_SESSION_EXPIRES_IN_SECONDS = 300
 
 
 class RobinhoodSyncService:
-    def __init__(self, db: SQLiteStore, market_service: MarketDataService) -> None:
+    def __init__(self, db: Any, market_service: MarketDataService) -> None:
         self.db = db
         self.market_service = market_service
 
