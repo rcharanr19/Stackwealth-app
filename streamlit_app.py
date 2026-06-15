@@ -345,16 +345,6 @@ def build_portfolio_summary(holdings: pd.DataFrame) -> pd.DataFrame:
     merged["open_pnl_margin_pct"] = (
         (merged["open_pnl"] / merged["cost_basis"]) * 100.0
     ).where(merged["cost_basis"] > 0)
-    
-    # Unrealized P&L % = (current_price - avg_cost) / avg_cost * 100
-    merged["unrealized_pnl_pct"] = (
-        ((merged["current_price"] - merged["avg_cost"]) / merged["avg_cost"]) * 100.0
-    ).where(merged["avg_cost"] > 0)
-    
-    # Total P&L % = (realized_pnl + unrealized_pnl) / cost_basis * 100
-    merged["total_pnl_pct"] = (
-        ((merged.get("realized_pnl_usd", 0.0) + merged.get("unrealized_pnl_usd", 0.0)) / merged["cost_basis"]) * 100.0
-    ).where(merged["cost_basis"] > 0)
 
     total_value = float(merged["current_value"].sum(skipna=True))
     merged["weight_pct"] = ((merged["current_value"] / total_value) * 100.0) if total_value > 0 else 0.0
