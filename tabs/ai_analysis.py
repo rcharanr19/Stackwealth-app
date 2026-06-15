@@ -60,31 +60,39 @@ def _extract_statement_value(frame: pd.DataFrame | None, row_names: list[str]) -
 
 
 def _fetch_yahoo_financial_profile(symbol: str) -> dict[str, Any]:
-    LOGGER.debug("Building lightweight Yahoo financial profile for %s (fast_info + SEC fallback)", symbol)
+    LOGGER.info("START: Fetching Yahoo financial profile for %s (fast_info + SEC fallback)", symbol)
     ticker = yf.Ticker(symbol)
     fast_info = {}
     try:
+        LOGGER.debug("Fetching fast_info from Yahoo Finance for %s", symbol)
         fast_info = getattr(ticker, "fast_info", None) or {}
+        LOGGER.debug("Successfully fetched fast_info for %s: %d fields", symbol, len(fast_info))
     except Exception as exc:
-        LOGGER.debug("Yahoo fast_info fetch failed for %s: %s", symbol, exc)
+        LOGGER.warning("Yahoo fast_info fetch failed for %s: %s", symbol, exc)
 
     history_price = None
     try:
+        LOGGER.debug("Fetching 5-day history from Yahoo Finance for %s", symbol)
         history = ticker.history(period="5d")
         if not history.empty and "Close" in history:
             close_series = history["Close"].dropna()
             if not close_series.empty:
                 history_price = _safe_float(close_series.iloc[-1])
-    except Exception:
+        LOGGER.debug("Successfully fetched history for %s, latest price: %s", symbol, history_price)
+    except Exception as exc:
+        LOGGER.warning("Yahoo history fetch failed for %s: %s", symbol, exc)
         history_price = None
 
     company_name = None
     try:
+        LOGGER.debug("Fetching company info from Yahoo Finance for %s", symbol)
         info = {}
         # Some installations still expose a lightweight info dict; try to read shortName safely
         info = getattr(ticker, "info", None) or {}
         company_name = info.get("shortName") or info.get("longName")
-    except Exception:
+        LOGGER.debug("Successfully fetched company info for %s: %s", symbol, company_name)
+    except Exception as exc:
+        LOGGER.warning("Yahoo info fetch failed for %s: %s", symbol, exc)
         company_name = None
 
     price = _safe_float(fast_info.get("lastPrice") or fast_info.get("last_price") or history_price)
@@ -159,15 +167,19 @@ def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
 
     This function is cached via Streamlit's cache_data where called by the app layer.
     """
+    LOGGER.info("START: Fetching SEC EDGAR financials for %s via EdgarTools", ticker)
+    
     # Ensure we set a descriptive User-Agent before making any EDGAR requests
     try:
         _configure_edgar_user_agent()
-    except Exception:
-        LOGGER.debug("Failed to configure EDGAR user-agent hook")
+    except Exception as exc:
+        LOGGER.debug("Failed to configure EDGAR user-agent hook: %s", exc)
 
     if not edgar:
+        LOGGER.warning("EdgarTools not available; skipping SEC data fetch for %s", ticker)
         return None
     try:
+        LOGGER.debug("Fetching EDGAR filings for %s", ticker)
         # Try common EdgarTools fetchers; adapt to available API
         candidates = [
             getattr(edgar, "get_company_filings", None),
@@ -176,20 +188,29 @@ def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
             getattr(edgar, "get_filings", None),
         ]
         filings = None
-        for fn in candidates:
+        for fn_name in dir(edgar):
+            fn = getattr(edgar, fn_name, None)
             if callable(fn):
                 try:
+                    LOGGER.debug("Attempting EDGAR method: %s for %s", fn_name, ticker)
                     filings = fn(ticker, filing_type="10-K", count=2)
+                    LOGGER.debug("Successfully fetched filings via %s for %s", fn_name, ticker)
                     break
                 except TypeError:
                     try:
                         filings = fn(ticker)
+                        LOGGER.debug("Successfully fetched filings via %s (fallback) for %s", fn_name, ticker)
                         break
                     except Exception:
                         continue
+                except Exception:
+                    continue
+                    
         if not filings:
+            LOGGER.warning("No EDGAR filings found for %s", ticker)
             return None
 
+        LOGGER.debug("Found EDGAR filings for %s, extracting content", ticker)
         # Attempt to extract text bodies
         bodies: list[str] = []
         if isinstance(filings, dict):
@@ -207,7 +228,10 @@ def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
 
         text = "\n\n".join([b for b in bodies if b])
         if not text:
+            LOGGER.warning("No text content extracted from EDGAR filings for %s", ticker)
             return None
+
+        LOGGER.debug("Extracted %d characters from EDGAR filings for %s", len(text), ticker)
 
         def _parse_amount(label: str) -> float | None:
             pattern = re.compile(r"""(?:%s)\s{0,60}[$]?[\(]?[0-9,\.\)\-]+""" % re.escape(label), re.IGNORECASE)
@@ -237,16 +261,24 @@ def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
             result["total_debt"] = total_debt
         if operating_cash_flow is not None:
             result["operating_cash_flow"] = operating_cash_flow
-        return result if result else None
-    except Exception:
-        LOGGER.exception("Edgar extraction failed for %s", ticker)
+        
+        if result:
+            LOGGER.info("END: Successfully extracted %d fields from SEC EDGAR for %s", len(result), ticker)
+            return result
+        else:
+            LOGGER.warning("No financial data extracted from SEC EDGAR for %s", ticker)
+            return None
+    except Exception as exc:
+        LOGGER.exception("END: Edgar extraction failed for %s: %s", ticker, exc)
         return None
 
 
 def _gemini_client() -> genai.Client:
+    LOGGER.debug("Initializing Gemini API client")
     api_key = str(st.secrets.get("GEMINI_API_KEY", "")).strip()
     if not api_key:
         raise RuntimeError("GEMINI_API_KEY is not configured in Streamlit secrets.")
+    LOGGER.debug("Gemini API client initialized successfully")
     return genai.Client(api_key=api_key)
 
 
@@ -318,6 +350,9 @@ def _gemini_generate_with_retries(client: genai.Client, prompt: str, models: lis
     if models is None:
         models = [get_model_name()]
 
+    prompt_preview = prompt[:100].replace("\n", " ") if prompt else ""
+    LOGGER.info("START: Gemini content generation (models=%s, prompt_preview='%s...')", models, prompt_preview)
+    
     last_exc = None
     for model in models:
         if not model:
@@ -325,8 +360,10 @@ def _gemini_generate_with_retries(client: genai.Client, prompt: str, models: lis
         delay = initial_delay
         for attempt in range(1, max_attempts + 1):
             try:
-                LOGGER.debug("Gemini generate attempt model=%s attempt=%d", model, attempt)
-                return client.models.generate_content(model=model, contents=prompt)
+                LOGGER.debug("Gemini generate attempt: model=%s attempt=%d/%d", model, attempt, max_attempts)
+                result = client.models.generate_content(model=model, contents=prompt)
+                LOGGER.info("END: Gemini content generation succeeded with model=%s", model)
+                return result
             except Exception as exc:
                 last_exc = exc
                 msg = str(exc).lower()
@@ -337,21 +374,23 @@ def _gemini_generate_with_retries(client: genai.Client, prompt: str, models: lis
                     except Exception:
                         available = None
                     avail_text = ", ".join(available) if available else "(could not list models)"
-                    LOGGER.warning("Gemini model not found: %s; available: %s", model, avail_text)
+                    LOGGER.error("Gemini model not found: %s; available: %s", model, avail_text)
                     raise RuntimeError(f"Model '{model}' not available for generation. Available: {avail_text}") from exc
 
                 # Retries for transient service-side errors
                 if any(k in msg for k in ("503", "unavailable", "high demand", "too many requests", "rate limit", "429")):
-                    LOGGER.warning("Transient Gemini error for model=%s attempt=%d: %s", model, attempt, msg)
-                    LOGGER.debug("Full exception", exc_info=exc)
+                    LOGGER.warning("Transient Gemini error for model=%s attempt=%d/%d: %s", model, attempt, max_attempts, msg)
+                    LOGGER.debug("Full exception detail", exc_info=exc)
                     if attempt < max_attempts:
                         time.sleep(delay)
                         delay *= 2
                         continue
                 # Non-retriable or exhausted attempts -> break to try next model
+                LOGGER.warning("Non-retriable Gemini error for model=%s attempt=%d: %s", model, attempt, msg)
                 break
 
     # If we exhausted all models/attempts, raise the last exception
+    LOGGER.error("END: Gemini content generation failed after all attempts and models")
     if last_exc:
         raise last_exc
     raise RuntimeError("Gemini generation failed without a specific exception.")
@@ -372,7 +411,7 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
         LOGGER.warning("FMP_API_KEY missing; falling back to Yahoo finance profile for %s", symbol)
         return _fetch_yahoo_financial_profile(symbol)
 
-    LOGGER.debug("Starting FMP financial profile fetch for %s", symbol)
+    LOGGER.info("START: Fetching FMP financial profile for %s (income_statement, balance_sheet, cash_flow)", symbol)
 
     endpoints = {
         "income_statement": f"https://financialmodelingprep.com/stable/income-statement?symbol={symbol}&limit=5&apikey={api_key}",
@@ -381,10 +420,10 @@ def fetch_fmp_financial_profile(ticker_symbol: str) -> dict[str, Any]:
     }
 
     def _fetch_one(name: str, url: str) -> tuple[str, list[dict[str, Any]]]:
-        LOGGER.debug("Fetching FMP endpoint %s for %s", name, symbol)
+        LOGGER.debug("START FMP request: %s for %s", name, symbol)
         response = requests.get(url, timeout=25)
         LOGGER.debug(
-            "FMP endpoint %s for %s returned HTTP %s",
+            "END FMP request: %s for %s returned HTTP %s",
             name,
             symbol,
             response.status_code,
