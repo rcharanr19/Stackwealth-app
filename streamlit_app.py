@@ -643,24 +643,6 @@ def main() -> None:
             kpi3.metric("Total Change %", "N/A" if total_change_pct is None else f"{total_change_pct:+.2f}%")
             kpi4.metric("Day Change %", f"{day_change_pct:+.2f}%")
 
-            # --- AI Overview: show latest saved report for the whole portfolio and allow regeneration ---
-            try:
-                cached_portfolio_overview = db.get_latest_ai_report("PORTFOLIO", "portfolio_overview")
-            except Exception:
-                cached_portfolio_overview = None
-
-            if cached_portfolio_overview and cached_portfolio_overview.get("report_md"):
-                ts = _fmt_iso_ts(cached_portfolio_overview.get("created_at"))
-                title = "Latest Saved AI Overview" + (f" — Generated {ts}" if ts else "")
-                # compute lightweight current hash to detect staleness without expensive enrichment
-                current_brief_hash = _brief_portfolio_hash(metrics, portfolio_summary, profile)
-                saved_inputs = cached_portfolio_overview.get("inputs") or {}
-                saved_hash = saved_inputs.get("portfolio_hash") if isinstance(saved_inputs, dict) else None
-                if saved_hash and current_brief_hash and saved_hash != current_brief_hash:
-                    title += " — Stale (snapshot changed)"
-                st.subheader(title)
-                st.markdown(cached_portfolio_overview.get("report_md") or "")
-
             display = portfolio_summary[
                 [
                     "ticker",
@@ -733,6 +715,24 @@ def main() -> None:
                         LOGGER.exception("Failed to persist portfolio overview report; continuing.")
                 except Exception as exc:
                     st.error(f"AI Overview generation failed: {exc}")
+
+            # --- Show cached portfolio overview report below the button ---
+            try:
+                cached_portfolio_overview = db.get_latest_ai_report("PORTFOLIO", "portfolio_overview")
+            except Exception:
+                cached_portfolio_overview = None
+
+            if cached_portfolio_overview and cached_portfolio_overview.get("report_md"):
+                ts = _fmt_iso_ts(cached_portfolio_overview.get("created_at"))
+                title = "Latest Saved AI Overview" + (f" — Generated {ts}" if ts else "")
+                # compute lightweight current hash to detect staleness without expensive enrichment
+                current_brief_hash = _brief_portfolio_hash(metrics, portfolio_summary, profile)
+                saved_inputs = cached_portfolio_overview.get("inputs") or {}
+                saved_hash = saved_inputs.get("portfolio_hash") if isinstance(saved_inputs, dict) else None
+                if saved_hash and current_brief_hash and saved_hash != current_brief_hash:
+                    title += " — Stale (snapshot changed)"
+                st.subheader(title)
+                st.markdown(cached_portfolio_overview.get("report_md") or "")
 
         st.subheader("Status")
         st.json(
