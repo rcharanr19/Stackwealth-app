@@ -345,10 +345,20 @@ def build_portfolio_summary(holdings: pd.DataFrame) -> pd.DataFrame:
     merged["open_pnl_margin_pct"] = (
         (merged["open_pnl"] / merged["cost_basis"]) * 100.0
     ).where(merged["cost_basis"] > 0)
+    
+    # Unrealized P&L % = (current_price - avg_cost) / avg_cost * 100
+    merged["unrealized_pnl_pct"] = (
+        ((merged["current_price"] - merged["avg_cost"]) / merged["avg_cost"]) * 100.0
+    ).where(merged["avg_cost"] > 0)
+    
+    # Total P&L % = (realized_pnl + unrealized_pnl) / cost_basis * 100
+    merged["total_pnl_pct"] = (
+        ((merged.get("realized_pnl_usd", 0.0) + merged.get("unrealized_pnl_usd", 0.0)) / merged["cost_basis"]) * 100.0
+    ).where(merged["cost_basis"] > 0)
 
     total_value = float(merged["current_value"].sum(skipna=True))
     merged["weight_pct"] = ((merged["current_value"] / total_value) * 100.0) if total_value > 0 else 0.0
-    return merged.sort_values(by="current_value", ascending=False, na_position="last")
+    return merged.sort_values(by="weight_pct", ascending=False, na_position="last")
 
 
 def _supports_dialog() -> bool:
@@ -577,6 +587,18 @@ def main() -> None:
             portfolio_summary["open_pnl_margin_pct"] = (
                 (portfolio_summary["open_pnl"] / portfolio_summary["cost_basis"]) * 100.0
             ).where(portfolio_summary.get("cost_basis") > 0)
+            
+            # Unrealized P&L % = (current_price - avg_cost) / avg_cost * 100
+            portfolio_summary["unrealized_pnl_pct"] = portfolio_summary.get("unrealized_change_pct")
+            
+            # Total P&L % = (realized_pnl_usd + unrealized_pnl_usd) / cost_basis * 100
+            realized_pnl = portfolio_summary.get("realized_pnl_usd", 0.0)
+            unrealized_pnl = portfolio_summary.get("unrealized_pnl_usd", 0.0)
+            cost_basis = portfolio_summary.get("cost_basis", 0.0)
+            portfolio_summary["total_pnl_pct"] = (
+                ((realized_pnl.fillna(0.0) + unrealized_pnl.fillna(0.0)) / cost_basis.fillna(0.0)) * 100.0
+            ).where(cost_basis.fillna(0.0) > 0)
+            
             # Provide market cap tier for display
             portfolio_summary["market_cap_tier"] = portfolio_summary.get("market_cap").apply(_market_cap_tier)
     except Exception as exc:
@@ -642,6 +664,56 @@ def main() -> None:
                 st.subheader(title)
                 st.markdown(cached_portfolio_overview.get("report_md") or "")
 
+            display = portfolio_summary[
+                [
+                    "ticker",
+                    "company_name",
+                    "shares",
+                    "avg_cost",
+                    "current_price",
+                    "last_day_change_pct",
+                    "cost_basis",
+                    "current_value",
+                    "unrealized_pnl_pct",
+                    "total_pnl_pct",
+                    "open_pnl",
+                    "weight_pct",
+                ]
+            ].rename(
+                columns={
+                    "ticker": "Ticker",
+                    "company_name": "Company",
+                    "shares": "Shares",
+                    "avg_cost": "Avg Cost",
+                    "current_price": "Current Price",
+                    "last_day_change_pct": "Day Change %",
+                    "cost_basis": "Cost Basis",
+                    "current_value": "Current Value",
+                    "unrealized_pnl_pct": "Unrealized P&L %",
+                    "total_pnl_pct": "Total P&L %",
+                    "open_pnl": "Total P&L",
+                    "weight_pct": "Weight %",
+                }
+            )
+
+            styler = display.style.format(
+                {
+                    "Shares": "{:.4f}",
+                    "Avg Cost": _fmt_currency_2,
+                    "Current Price": _fmt_currency_2,
+                    "Day Change %": "{:+.2f}%",
+                    "Cost Basis": _fmt_currency_2,
+                    "Current Value": _fmt_currency_2,
+                    "Unrealized P&L %": "{:+.2f}%",
+                    "Total P&L %": "{:+.2f}%",
+                    "Total P&L": _fmt_currency_2,
+                    "Weight %": "{:.2f}%",
+                }
+            )
+
+            styled = styler.map(style_signed_value, subset=["Total P&L", "Unrealized P&L %", "Total P&L %", "Day Change %"])
+            st.dataframe(styled, width="stretch")
+
             if st.button("Run AI Overview", key="run_ai_overview", width="stretch"):
                 try:
                     with st.spinner("Building portfolio payload..."):
@@ -664,53 +736,6 @@ def main() -> None:
                         LOGGER.exception("Failed to persist portfolio overview report; continuing.")
                 except Exception as exc:
                     st.error(f"AI Overview generation failed: {exc}")
-
-            display = portfolio_summary[
-                [
-                    "ticker",
-                    "company_name",
-                    "shares",
-                    "avg_cost",
-                    "cost_basis",
-                    "current_price",
-                    "current_value",
-                    "open_pnl",
-                    "open_pnl_margin_pct",
-                    "weight_pct",
-                    "last_day_change_pct",
-                ]
-            ].rename(
-                columns={
-                    "ticker": "Ticker",
-                    "company_name": "Company",
-                    "shares": "Shares",
-                    "avg_cost": "Avg Cost",
-                    "cost_basis": "Cost Basis",
-                    "current_price": "Current Price",
-                    "current_value": "Current Value",
-                    "open_pnl": "Total P&L",
-                    "open_pnl_margin_pct": "Total P&L Margin %",
-                    "weight_pct": "Weight %",
-                    "last_day_change_pct": "Day Change %",
-                }
-            )
-
-            styler = display.style.format(
-                {
-                    "Shares": "{:.4f}",
-                    "Avg Cost": _fmt_currency_2,
-                    "Cost Basis": _fmt_currency_2,
-                    "Current Price": _fmt_currency_2,
-                    "Current Value": _fmt_currency_2,
-                    "Total P&L": _fmt_currency_2,
-                    "Total P&L Margin %": "{:+.2f}%",
-                    "Weight %": "{:.2f}%",
-                    "Day Change %": "{:+.2f}%",
-                }
-            )
-
-            styled = styler.map(style_signed_value, subset=["Total P&L", "Total P&L Margin %", "Day Change %"])
-            st.dataframe(styled, width="stretch")
 
         st.subheader("Status")
         st.json(
