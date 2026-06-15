@@ -18,6 +18,13 @@ from alphavault.postgres_store import PostgresStore
 from alphavault.logging_utils import configure_logging
 from alphavault.market_data import MarketDataService
 from alphavault.robinhood_sync import RobinhoodSyncService
+from alphavault.auth import (
+    get_supabase_client,
+    require_authentication,
+    render_sidebar_logout,
+    get_current_user_id,
+    get_current_user_info,
+)
 from tabs.ai_analysis import (
     get_reverse_dcf_analysis,
     get_transcript_mosaic_analysis,
@@ -356,23 +363,15 @@ def _supports_dialog() -> bool:
 
 
 def require_login() -> None:
-    if st.session_state.get("authenticated"):
-        return
-
-    expected_password = str(st.secrets.get("APP_PASSWORD", "")).strip()
-    if not expected_password:
-        st.error("APP_PASSWORD is not configured. Add it in Streamlit app secrets.")
+    """Enforce authentication using Supabase multi-user auth."""
+    try:
+        client = get_supabase_client()
+        if not require_authentication(client):
+            st.stop()
+        LOGGER.info("User authenticated: user_id=%s", get_current_user_id()[:8])
+    except RuntimeError as exc:
+        st.error(f"Authentication failed: {exc}")
         st.stop()
-
-    st.title("Sign in")
-    entered_password = st.text_input("Password", type="password", key="app_password_input")
-    if st.button("Enter", width="stretch"):
-        if hmac.compare_digest(str(entered_password or ""), expected_password):
-            st.session_state["authenticated"] = True
-            st.rerun()
-        else:
-            st.error("Invalid password")
-    st.stop()
 
 
 @st.cache_resource(show_spinner=False)
@@ -521,6 +520,10 @@ def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
 def main() -> None:
     st.set_page_config(page_title=APP_TITLE, page_icon="📈", layout="wide")
     require_login()
+    
+    # Render logout button in sidebar
+    render_sidebar_logout()
+    
     st.title("StackWealth")
     st.caption("Baseline-first Robinhood sync with durable first-run state.")
 

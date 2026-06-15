@@ -180,9 +180,17 @@ class PostgresStore:
 
         return min(parsed_dates).isoformat()
 
-    def seed_from_json(self, json_path: Path) -> None:
+    def seed_from_json(self, json_path: Path, user_id: str | None = None) -> None:
         if not json_path.exists():
             return
+
+        # If user_id not provided, try to get from Streamlit session state
+        if user_id is None:
+            try:
+                import streamlit as st
+                user_id = st.session_state.get("user_id")
+            except Exception:
+                user_id = None
 
         payload = json.loads(json_path.read_text(encoding="utf-8"))
         positions = [parse_position(item) for item in payload.get("positions", [])]
@@ -197,8 +205,8 @@ class PostgresStore:
                         session.execute(
                             text("""
                             INSERT INTO public.portfolio_cache
-                            (ticker, company_name, shares, avg_price, currency, last_price, market_cap, unrealized_pnl_usd, realized_pnl_usd, updated_at)
-                            VALUES (:ticker, :company_name, :shares, :avg_price, :currency, NULL, NULL, NULL, NULL, :updated_at)
+                            (ticker, company_name, shares, avg_price, currency, last_price, market_cap, unrealized_pnl_usd, realized_pnl_usd, updated_at, user_id)
+                            VALUES (:ticker, :company_name, :shares, :avg_price, :currency, NULL, NULL, NULL, NULL, :updated_at, :user_id)
                             ON CONFLICT (ticker) DO NOTHING
                             """),
                             {
@@ -208,6 +216,7 @@ class PostgresStore:
                                 "avg_price": float(position.avg_price),
                                 "currency": position.currency,
                                 "updated_at": now,
+                                "user_id": user_id,
                             },
                         )
                     session.commit()
@@ -227,6 +236,7 @@ class PostgresStore:
                             "price": 0.0,
                             "amount": float(tx.amount),
                             "currency": "USD",
+                            "user_id": user_id,
                         }
                     )
                 with self.connection.session as session:
@@ -234,8 +244,8 @@ class PostgresStore:
                         session.execute(
                             text("""
                             INSERT INTO public.transactions
-                            (execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency)
-                            VALUES (:execution_id, :order_id, :ticker, :tx_date, :side, :shares, :price, :amount, :currency)
+                            (execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency, user_id)
+                            VALUES (:execution_id, :order_id, :ticker, :tx_date, :side, :shares, :price, :amount, :currency, :user_id)
                             ON CONFLICT (execution_id) DO NOTHING
                             """),
                             row,
@@ -245,23 +255,38 @@ class PostgresStore:
             LOGGER.exception("Seeding PostgreSQL from portfolio JSON failed: %s", exc)
             raise RuntimeError("Unable to seed PostgreSQL from portfolio JSON") from exc
 
-    def load_portfolio_state(self) -> tuple[list[Position], list[Transaction]]:
-        pos_df = self._query_df(
-            """
+    def load_portfolio_state(self, user_id: str | None = None) -> tuple[list[Position], list[Transaction]]:
+        """Load portfolio state for authenticated user (multi-user support)."""
+        # If user_id not provided, try to get from Streamlit session state
+        if user_id is None:
+            try:
+                import streamlit as st
+                user_id = st.session_state.get("user_id")
+                if not user_id:
+                    LOGGER.warning("user_id not available in session_state and not provided as parameter")
+                    user_id = None
+            except Exception:
+                user_id = None
+        
+        # Build queries with optional user_id filtering
+        pos_query = """
             SELECT ticker, company_name, shares, avg_price, currency
             FROM public.portfolio_cache
-            ORDER BY ticker
-            """,
-            ttl=0,
-        )
-        tx_df = self._query_df(
             """
+        if user_id:
+            pos_query += f" WHERE user_id = '{user_id}'"
+        pos_query += " ORDER BY ticker"
+        
+        tx_query = """
             SELECT execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency, created_at
             FROM public.transactions
-            ORDER BY tx_date, created_at, execution_id
-            """,
-            ttl=0,
-        )
+            """
+        if user_id:
+            tx_query += f" WHERE user_id = '{user_id}'"
+        tx_query += " ORDER BY tx_date, created_at, execution_id"
+        
+        pos_df = self._query_df(pos_query, ttl=0)
+        tx_df = self._query_df(tx_query, ttl=0)
 
         positions = [
             Position(
@@ -303,14 +328,23 @@ class PostgresStore:
         price: float,
         amount: float,
         currency: str,
+        user_id: str | None = None,
     ) -> bool:
+        # If user_id not provided, try to get from Streamlit session state
+        if user_id is None:
+            try:
+                import streamlit as st
+                user_id = st.session_state.get("user_id")
+            except Exception:
+                user_id = None
+        
         try:
             with self.connection.session as session:
                 result = session.execute(
                     text("""
                     INSERT INTO public.transactions
-                    (execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency)
-                    VALUES (:execution_id, :order_id, :ticker, :tx_date, :side, :shares, :price, :amount, :currency)
+                    (execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency, user_id)
+                    VALUES (:execution_id, :order_id, :ticker, :tx_date, :side, :shares, :price, :amount, :currency, :user_id)
                     ON CONFLICT (execution_id) DO NOTHING
                     """),
                     {
@@ -323,6 +357,7 @@ class PostgresStore:
                         "price": float(price),
                         "amount": float(amount),
                         "currency": currency,
+                        "user_id": user_id,
                     },
                 )
                 session.commit()

@@ -1,0 +1,21 @@
+# Updated requirements.txt with Supabase support
+# Add these packages to your existing requirements.txt
+
+# Existing packages (keep these)
+streamlit>=1.28.0
+pandas>=2.0.0
+sqlalchemy>=2.0.0
+psycopg2-binary>=2.9.0
+yfinance>=0.2.30
+requests>=2.31.0
+python-dotenv>=1.0.0
+google-generativeai>=0.3.0
+edgartools>=1.0.0
+
+# NEW: Supabase authentication and client
+supabase>=2.0.0          # Supabase Python client
+postgrest-py>=0.10.0     # REST client for Supabase
+python-gotrue>=0.10.0    # Supabase auth library
+
+# Optional but recommended
+cryptography>=41.0.0     # For secure token handling
