@@ -473,7 +473,34 @@ Output rules:
         response = _gemini_generate_with_retries(client, prompt, models=[get_model_name()])
     except Exception:
         raise
-    return _response_text(response)
+    
+    report_text = _response_text(response)
+    
+    # Add data sources footer
+    sources = ["Yahoo Finance (real-time market data)", "User portfolio holdings"]
+    if edgar:
+        sources.append("SEC EDGAR (via EdgarTools)")
+    sources_footer = _build_data_sources_footer(sources)
+    
+    # Add data source acknowledgment for portfolio overview
+    data_note = """## Data Sources & Limitations
+
+This portfolio overview is built from:
+- **Real-time market data**: Yahoo Finance fast_info and SEC EDGAR filings
+- **Holdings data**: Your current portfolio positions and transaction history
+- **P&L calculations**: Realized and unrealized gains/losses based on your cost basis
+
+For deep historical financial statement analysis (5+ year forensic trends), direct EDGAR SEC filing access or premium financial data providers are recommended.
+
+---
+
+"""
+    
+    result = data_note + report_text
+    if sources_footer:
+        result = result + "\n\n" + sources_footer
+    
+    return result
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -632,7 +659,58 @@ Construct a clean Markdown table mapping the most important trends, inflections,
 
     client = _gemini_client()
     response = _gemini_generate_with_retries(client, prompt)
-    return _response_text(response)
+    
+    report_text = _response_text(response)
+    
+    # Add data sources footer
+    sources = ["Financial Modeling Prep (historical financials)", "User allocation details"]
+    if edgar:
+        sources.append("SEC EDGAR (via EdgarTools)")
+    if past_tx_text or current_tx_text:
+        sources.append("Earnings call transcripts (user-provided)")
+    sources_footer = _build_data_sources_footer(sources)
+    
+    result = report_text
+    if sources_footer:
+        result = result + "\n\n" + sources_footer
+    
+    return result
+
+
+def _build_data_limitation_disclaimer(symbol: str, has_statements: bool = False) -> str:
+    """Build a data limitation acknowledgment for reports when historical financials are unavailable."""
+    if has_statements:
+        return ""
+    
+    return f"""## Acknowledgment of Data Limitations
+
+**Note:** The raw API data payload for historical statement line items (income_statement, balance_sheet, cash_flow) for {symbol} was empty or incomplete. 
+
+To deliver comprehensive analysis despite limited historical financial data, this report:
+- Relies on currently available market data from Yahoo Finance and SEC EDGAR
+- Uses real-time fundamentals (current price, shares outstanding, recent FCF if available)
+- Focuses on forward-looking valuation and risk assessment rather than deep historical trend analysis
+- May reconstruct or estimate metrics based on publicly available quarterly filings
+
+For institutional-grade forensic analysis with full historical ledgers (2020-present), direct access to SEC filings via EDGAR or a premium financial data provider is recommended.
+
+---
+
+""".strip()
+
+
+def _build_data_sources_footer(sources: list[str]) -> str:
+    """Build a footer showing which data sources were used in the analysis."""
+    if not sources:
+        return ""
+    
+    sources_text = ", ".join(sources)
+    return f"""## Data Sources
+
+This analysis was built using data from: **{sources_text}**
+
+---
+""".strip()
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -688,7 +766,28 @@ Output requirements:
     except Exception:
         # Let caller surface the underlying exception
         raise
-    return _response_text(response)
+    
+    # Fetch profile to check data availability
+    profile = _fetch_yahoo_financial_profile(symbol)
+    has_statements = bool(profile.get("income_statement") or profile.get("balance_sheet") or profile.get("cash_flow"))
+    
+    # Build disclaimer if statements are empty
+    disclaimer = _build_data_limitation_disclaimer(symbol, has_statements)
+    report_text = _response_text(response)
+    
+    # Add data sources footer
+    sources = ["Yahoo Finance (live_price, shares_outstanding, FCF)"]
+    if edgar:
+        sources.append("SEC EDGAR (via EdgarTools)")
+    sources_footer = _build_data_sources_footer(sources)
+    
+    result = report_text
+    if disclaimer:
+        result = disclaimer + "\n\n" + result
+    if sources_footer:
+        result = result + "\n\n" + sources_footer
+    
+    return result
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -728,7 +827,28 @@ Output requirements:
         response = _gemini_generate_with_retries(client, prompt, models=[model_name])
     except Exception:
         raise
-    return _response_text(response)
+    
+    # Fetch profile to check data availability
+    profile = _fetch_yahoo_financial_profile(symbol)
+    has_statements = bool(profile.get("income_statement") or profile.get("balance_sheet") or profile.get("cash_flow"))
+    
+    # Build disclaimer if statements are empty
+    disclaimer = _build_data_limitation_disclaimer(symbol, has_statements)
+    report_text = _response_text(response)
+    
+    # Add data sources footer
+    sources = ["User-provided earnings transcript", "Yahoo Finance (company fundamentals)"]
+    if edgar:
+        sources.append("SEC EDGAR (via EdgarTools)")
+    sources_footer = _build_data_sources_footer(sources)
+    
+    result = report_text
+    if disclaimer:
+        result = disclaimer + "\n\n" + result
+    if sources_footer:
+        result = result + "\n\n" + sources_footer
+    
+    return result
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -829,4 +949,19 @@ Additional context (transcript):
         response = _gemini_generate_with_retries(client, prompt, models=[get_model_name()])
     except Exception:
         raise
-    return _response_text(response)
+    
+    report_text = _response_text(response)
+    
+    # Add data sources footer
+    sources = ["Yahoo Finance (market fundamentals)", "User allocation details"]
+    if edgar:
+        sources.append("SEC EDGAR (via EdgarTools)")
+    if transcript_text:
+        sources.append("Earnings call transcript (user-provided)")
+    sources_footer = _build_data_sources_footer(sources)
+    
+    result = report_text
+    if sources_footer:
+        result = result + "\n\n" + sources_footer
+    
+    return result
