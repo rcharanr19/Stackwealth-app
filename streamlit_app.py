@@ -629,12 +629,19 @@ def main() -> None:
             total_value = float(portfolio_summary["current_value"].sum(skipna=True))
             total_cost = float(portfolio_summary["cost_basis"].sum(skipna=True))
             total_open_pnl = float(portfolio_summary["open_pnl"].sum(skipna=True))
-            pnl_margin = ((total_open_pnl / total_cost) * 100.0) if total_cost > 0 else None
+            total_change_pct = ((total_open_pnl / total_cost) * 100.0) if total_cost > 0 else None
+            
+            # Calculate portfolio day change % as weighted average
+            portfolio_summary_filled = portfolio_summary.copy()
+            portfolio_summary_filled["last_day_change_pct"] = portfolio_summary_filled["last_day_change_pct"].fillna(0.0)
+            portfolio_summary_filled["weight_pct"] = portfolio_summary_filled["weight_pct"].fillna(0.0)
+            day_change_pct = (portfolio_summary_filled["last_day_change_pct"] * portfolio_summary_filled["weight_pct"] / 100.0).sum()
 
-            kpi1, kpi2, kpi3 = st.columns(3)
+            kpi1, kpi2, kpi3, kpi4 = st.columns(4)
             kpi1.metric("Current Value", f"${total_value:,.2f}")
             kpi2.metric("Total P&L", f"${total_open_pnl:,.2f}")
-            kpi3.metric("Total P&L Margin", "N/A" if pnl_margin is None else f"{pnl_margin:+.2f}%")
+            kpi3.metric("Total Change %", "N/A" if total_change_pct is None else f"{total_change_pct:+.2f}%")
+            kpi4.metric("Day Change %", f"{day_change_pct:+.2f}%")
 
             # --- AI Overview: show latest saved report for the whole portfolio and allow regeneration ---
             try:
