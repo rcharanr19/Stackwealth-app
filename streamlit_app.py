@@ -37,9 +37,16 @@ LOGGER = logging.getLogger(__name__)
 # Optional EdgarTools integration (open-source SEC wrapper). If unavailable, fallback safely.
 try:
     import edgartools as edgar  # type: ignore
-except Exception as exc:
-    LOGGER.exception("edgartools import failed: %s", exc)
-    edgar = None
+except Exception:
+    # Some installs expose the runtime package as `edgar` (module name differs from PyPI name).
+    try:
+        import edgar as edgar  # type: ignore
+    except Exception as exc:
+        LOGGER.warning(
+            "Optional EDGAR integration unavailable (edgartools/edgar import failed): %s",
+            exc,
+        )
+        edgar = None
 
 APP_TITLE = "StackWealth"
 PORTFOLIO_JSON = Path("data/portfolio.json")

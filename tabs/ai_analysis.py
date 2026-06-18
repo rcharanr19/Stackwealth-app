@@ -145,7 +145,10 @@ def _fetch_yahoo_financial_profile(symbol: str) -> dict[str, Any]:
 try:
     import edgartools as edgar  # type: ignore
 except Exception:
-    edgar = None
+    try:
+        import edgar as edgar  # type: ignore
+    except Exception:
+        edgar = None
 
 
 def _configure_edgar_user_agent() -> None:
