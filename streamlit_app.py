@@ -37,7 +37,8 @@ LOGGER = logging.getLogger(__name__)
 # Optional EdgarTools integration (open-source SEC wrapper). If unavailable, fallback safely.
 try:
     import edgartools as edgar  # type: ignore
-except Exception:
+except Exception as exc:
+    LOGGER.exception("edgartools import failed: %s", exc)
     edgar = None
 
 APP_TITLE = "StackWealth"
@@ -189,8 +190,21 @@ def build_portfolio_overview_input(metrics: pd.DataFrame, portfolio_summary: pd.
         # Lightweight market cap via yfinance.fast_info
         try:
             t = yf.Ticker(ticker)
-            fast = getattr(t, "fast_info", {}) or {}
-            mcap = _safe_float(fast.get("marketCap") or fast.get("market_cap") or fast.get("marketCap"))
+            raw_fast = getattr(t, "fast_info", None)
+            if raw_fast is None:
+                fast = {}
+            elif isinstance(raw_fast, dict):
+                fast = raw_fast
+            else:
+                try:
+                    fast = {
+                        "marketCap": getattr(raw_fast, "marketCap", None),
+                        "market_cap": getattr(raw_fast, "market_cap", None),
+                    }
+                    fast = {k: v for k, v in fast.items() if v is not None}
+                except Exception:
+                    fast = {}
+            mcap = _safe_float(fast.get("marketCap") or fast.get("market_cap"))
         except Exception:
             mcap = None
 
@@ -292,7 +306,23 @@ def fetch_market_snapshot(tickers: tuple[str, ...]) -> pd.DataFrame:
         if not symbol:
             continue
         instrument = yf.Ticker(symbol)
-        fast_info = getattr(instrument, "fast_info", {}) or {}
+        raw_fast = getattr(instrument, "fast_info", None)
+        if raw_fast is None:
+            fast_info = {}
+        elif isinstance(raw_fast, dict):
+            fast_info = raw_fast
+        else:
+            try:
+                fast_info = {
+                    "lastPrice": getattr(raw_fast, "lastPrice", None),
+                    "last_price": getattr(raw_fast, "last_price", None),
+                    "marketCap": getattr(raw_fast, "marketCap", None),
+                    "market_cap": getattr(raw_fast, "market_cap", None),
+                    "currency": getattr(raw_fast, "currency", None),
+                }
+                fast_info = {k: v for k, v in fast_info.items() if v is not None}
+            except Exception:
+                fast_info = {}
         # Prefer fast_info for lightweight snapshot (avoids heavy network calls)
         price = _safe_float(fast_info.get("lastPrice") or fast_info.get("last_price"))
         if price is None:

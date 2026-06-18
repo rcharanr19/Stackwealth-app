@@ -65,8 +65,28 @@ def _fetch_yahoo_financial_profile(symbol: str) -> dict[str, Any]:
     fast_info = {}
     try:
         LOGGER.debug("Fetching fast_info from Yahoo Finance for %s", symbol)
-        fast_info = getattr(ticker, "fast_info", None) or {}
-        LOGGER.debug("Successfully fetched fast_info for %s: %d fields", symbol, len(fast_info))
+        raw_fast = getattr(ticker, "fast_info", None)
+        if raw_fast is None:
+            fast_info = {}
+        elif isinstance(raw_fast, dict):
+            fast_info = raw_fast
+        else:
+            # Some yfinance versions return a FastInfo-like object that isn't dict-like
+            # Avoid evaluating it in a boolean context (which can raise TypeError).
+            try:
+                fast_info = {
+                    "lastPrice": getattr(raw_fast, "lastPrice", None),
+                    "last_price": getattr(raw_fast, "last_price", None),
+                    "marketCap": getattr(raw_fast, "marketCap", None),
+                    "market_cap": getattr(raw_fast, "market_cap", None),
+                    "currency": getattr(raw_fast, "currency", None),
+                }
+                # prune None values to keep logs meaningful
+                fast_info = {k: v for k, v in fast_info.items() if v is not None}
+            except Exception:
+                fast_info = {}
+        n_fields = len(fast_info) if isinstance(fast_info, dict) else 0
+        LOGGER.debug("Successfully fetched fast_info for %s: %d fields", symbol, n_fields)
     except Exception as exc:
         LOGGER.warning("Yahoo fast_info fetch failed for %s: %s", symbol, exc)
 
