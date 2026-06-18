@@ -41,7 +41,24 @@ class MarketDataService:
     def _fetch_quote_live(self, ticker: str) -> Quote:
         LOGGER.debug("Fetching live quote for %s", ticker)
         tk = yf.Ticker(ticker)
-        fast_info = self._quiet_call(lambda: getattr(tk, "fast_info", None)) or {}
+        raw_fast = self._quiet_call(lambda: getattr(tk, "fast_info", None))
+        if raw_fast is None:
+            fast_info = {}
+        elif isinstance(raw_fast, dict):
+            fast_info = raw_fast
+        else:
+            try:
+                fast_info = {
+                    "lastPrice": getattr(raw_fast, "lastPrice", None),
+                    "marketCap": getattr(raw_fast, "marketCap", None),
+                    "previousClose": getattr(raw_fast, "previousClose", None),
+                    "regularMarketPreviousClose": getattr(raw_fast, "regularMarketPreviousClose", None),
+                    "previous_close": getattr(raw_fast, "previous_close", None),
+                    "currency": getattr(raw_fast, "currency", None),
+                }
+                fast_info = {k: v for k, v in fast_info.items() if v is not None}
+            except Exception:
+                fast_info = {}
 
         price = fast_info.get("lastPrice")
         market_cap = fast_info.get("marketCap")
@@ -85,7 +102,23 @@ class MarketDataService:
         LOGGER.debug("Fetching yfinance company profile for %s", ticker)
         tk = yf.Ticker(ticker)
         # Prefer lightweight fast_info for company metadata to avoid heavy .info network calls
-        fast_info = self._quiet_call(lambda: getattr(tk, "fast_info", None)) or {}
+        raw_fast = self._quiet_call(lambda: getattr(tk, "fast_info", None))
+        if raw_fast is None:
+            fast_info = {}
+        elif isinstance(raw_fast, dict):
+            fast_info = raw_fast
+        else:
+            try:
+                fast_info = {
+                    "longName": getattr(raw_fast, "longName", None),
+                    "shortName": getattr(raw_fast, "shortName", None),
+                    "short_name": getattr(raw_fast, "short_name", None),
+                    "currency": getattr(raw_fast, "currency", None),
+                }
+                fast_info = {k: v for k, v in fast_info.items() if v is not None}
+            except Exception:
+                fast_info = {}
+
         company_name = None
         raw_currency = None
         if isinstance(fast_info, dict):
