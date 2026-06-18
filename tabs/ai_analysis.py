@@ -202,6 +202,73 @@ def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
         LOGGER.warning("EdgarTools not available; skipping SEC data fetch for %s", ticker)
         return None
     try:
+        def _coerce_numeric(value: Any) -> float | None:
+            if value is None:
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                cleaned = value.strip()
+                if not cleaned:
+                    return None
+                cleaned = cleaned.replace("$", "").replace(",", "")
+                cleaned = cleaned.replace("(", "-").replace(")", "")
+                try:
+                    return float(cleaned)
+                except Exception:
+                    return None
+            if isinstance(value, dict):
+                for key in ("value", "amount", "raw", "usd"):
+                    if key in value:
+                        parsed = _coerce_numeric(value.get(key))
+                        if parsed is not None:
+                            return parsed
+            return None
+
+        def _first_numeric_by_keys(root: Any, keys: list[str]) -> float | None:
+            normalized_keys = [k.lower().replace("_", " ").replace("-", " ") for k in keys]
+            stack: list[Any] = [root]
+            seen: set[int] = set()
+
+            while stack:
+                current = stack.pop()
+                current_id = id(current)
+                if current_id in seen:
+                    continue
+                seen.add(current_id)
+
+                parsed = _coerce_numeric(current)
+                if parsed is not None and not isinstance(current, (dict, list, tuple, set)):
+                    continue
+
+                if isinstance(current, dict):
+                    for key, value in current.items():
+                        key_norm = str(key).lower().replace("_", " ").replace("-", " ")
+                        if any(target in key_norm for target in normalized_keys):
+                            parsed_value = _coerce_numeric(value)
+                            if parsed_value is not None:
+                                return parsed_value
+                        stack.append(value)
+                    continue
+
+                if isinstance(current, (list, tuple, set)):
+                    stack.extend(list(current))
+                    continue
+
+                if hasattr(current, "to_dict"):
+                    try:
+                        stack.append(current.to_dict())
+                        continue
+                    except Exception:
+                        pass
+
+                if hasattr(current, "__dict__"):
+                    try:
+                        stack.append(vars(current))
+                        continue
+                    except Exception:
+                        pass
+
         LOGGER.debug("Fetching EDGAR filings for %s", ticker)
         # Try common EdgarTools fetchers; adapt to available API
         candidates = [
@@ -211,9 +278,9 @@ def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
             getattr(edgar, "get_filings", None),
         ]
         filings = None
-        for fn_name in dir(edgar):
-            fn = getattr(edgar, fn_name, None)
+        for fn in candidates:
             if callable(fn):
+                fn_name = getattr(fn, "__name__", "<unknown>")
                 try:
                     LOGGER.debug("Attempting EDGAR method: %s for %s", fn_name, ticker)
                     filings = fn(ticker, filing_type="10-K", count=2)
@@ -223,6 +290,26 @@ def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
                     try:
                         filings = fn(ticker)
                         LOGGER.debug("Successfully fetched filings via %s (fallback) for %s", fn_name, ticker)
+                        break
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+
+        # Last-resort compatibility pass for unexpected API surfaces.
+        if not filings:
+            for fn_name in dir(edgar):
+                fn = getattr(edgar, fn_name, None)
+                if not callable(fn):
+                    continue
+                try:
+                    filings = fn(ticker, filing_type="10-K", count=2)
+                    LOGGER.debug("Successfully fetched filings via dynamic method %s for %s", fn_name, ticker)
+                    break
+                except TypeError:
+                    try:
+                        filings = fn(ticker)
+                        LOGGER.debug("Successfully fetched filings via dynamic fallback %s for %s", fn_name, ticker)
                         break
                     except Exception:
                         continue
@@ -251,7 +338,34 @@ def _fetch_sec_financials_for_symbol(ticker: str) -> dict[str, Any] | None:
 
         text = "\n\n".join([b for b in bodies if b])
         if not text:
-            LOGGER.warning("No text content extracted from EDGAR filings for %s", ticker)
+            # Some EdgarTools versions return structured objects with numeric fields but no raw text body.
+            structured_result: dict[str, float] = {}
+            structured_assets = _first_numeric_by_keys(filings, ["total assets", "assets total"])
+            structured_debt = _first_numeric_by_keys(
+                filings,
+                ["total debt", "long term debt", "short term debt", "current debt"],
+            )
+            structured_ocf = _first_numeric_by_keys(
+                filings,
+                ["operating cash flow", "net cash provided by operating activities", "cash from operations"],
+            )
+
+            if structured_assets is not None:
+                structured_result["total_assets"] = structured_assets
+            if structured_debt is not None:
+                structured_result["total_debt"] = structured_debt
+            if structured_ocf is not None:
+                structured_result["operating_cash_flow"] = structured_ocf
+
+            if structured_result:
+                LOGGER.info(
+                    "Extracted %d SEC fields from structured EDGAR payload for %s",
+                    len(structured_result),
+                    ticker,
+                )
+                return structured_result
+
+            LOGGER.warning("No text or structured financial content extracted from EDGAR filings for %s", ticker)
             return None
 
         LOGGER.debug("Extracted %d characters from EDGAR filings for %s", len(text), ticker)
