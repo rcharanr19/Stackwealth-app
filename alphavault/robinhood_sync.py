@@ -20,6 +20,7 @@ class SyncResult:
 LOGGER = logging.getLogger(__name__)
 
 SYNC_SESSION_EXPIRES_IN_SECONDS = 300
+ROBINHOOD_SYNC_VERSION = "margin-v2"
 
 
 class RobinhoodSyncService:
@@ -294,7 +295,8 @@ class RobinhoodSyncService:
     ) -> SyncResult:
         account_number = self._normalize_account_number(account_number)
         LOGGER.info(
-            "Starting Robinhood sync for user=%s account=%s.",
+            "Starting Robinhood sync version=%s for user=%s account=%s.",
+            ROBINHOOD_SYNC_VERSION,
             mask_email(email),
             mask_account(account_number),
         )
@@ -411,7 +413,9 @@ class RobinhoodSyncService:
                     "Enter an SMS/authenticator 2FA code in the sync dialog and retry."
                 )
 
+            LOGGER.info("About to fetch Robinhood margin details before order sync.")
             self._sync_margin_balance(r, account_number)
+            LOGGER.info("Finished Robinhood margin details step.")
 
             profile = self.db.get_sync_profile()
             if profile is None:
