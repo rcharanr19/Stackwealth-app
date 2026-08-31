@@ -78,6 +78,60 @@ class RobinhoodSyncService:
                 return f"verification_workflow={verification}"
         return "unknown login response"
 
+    @staticmethod
+    def _safe_float(value: Any) -> float | None:
+        try:
+            if value in (None, ""):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _extract_margin_balance_usd(cls, account_profile: Any, portfolio_profile: Any, phoenix_account: Any) -> float | None:
+        phoenix_rows = phoenix_account if isinstance(phoenix_account, list) else [phoenix_account]
+        for row in phoenix_rows:
+            if not isinstance(row, dict):
+                continue
+            value = cls._safe_float(row.get("levered_amount"))
+            if value is not None:
+                return max(value, 0.0)
+
+        if isinstance(account_profile, dict):
+            margin_balances = account_profile.get("margin_balances")
+            if isinstance(margin_balances, dict):
+                for key in ("outstanding_margin_balance", "margin_used", "levered_amount"):
+                    value = cls._safe_float(margin_balances.get(key))
+                    if value is not None:
+                        return max(value, 0.0)
+            cash = cls._safe_float(account_profile.get("cash"))
+            if cash is not None and cash < 0:
+                return abs(cash)
+
+        if isinstance(portfolio_profile, dict):
+            excess_margin = cls._safe_float(portfolio_profile.get("excess_margin"))
+            excess_maintenance = cls._safe_float(portfolio_profile.get("excess_maintenance"))
+            if excess_margin is not None and excess_maintenance is not None and excess_margin < 0:
+                return abs(excess_margin)
+
+        return None
+
+    def _sync_margin_balance(self, robinhood_module: Any, account_number: str | None) -> None:
+        setter = getattr(self.db, "set_margin_balance_usd", None)
+        if not callable(setter):
+            return
+
+        try:
+            account_profile = robinhood_module.profiles.load_account_profile(account_number=account_number)
+            portfolio_profile = robinhood_module.profiles.load_portfolio_profile(account_number=account_number)
+            phoenix_account = robinhood_module.account.load_phoenix_account()
+            margin_balance = self._extract_margin_balance_usd(account_profile, portfolio_profile, phoenix_account)
+            if margin_balance is not None:
+                setter(margin_balance)
+                LOGGER.info("Updated Robinhood margin balance: %.2f", margin_balance)
+        except Exception:
+            LOGGER.exception("Unable to update Robinhood margin balance; continuing sync.")
+
     def _parse_tx_date(self, raw: Any) -> str:
         value = str(raw or "").strip()
         if not value:
@@ -222,6 +276,8 @@ class RobinhoodSyncService:
                     "This is a known robin_stocks challenge-flow issue for app push approvals. "
                     "Enter an SMS/authenticator 2FA code in the sync dialog and retry."
                 )
+
+            self._sync_margin_balance(r, account_number)
 
             profile = self.db.get_sync_profile()
             if profile is None:

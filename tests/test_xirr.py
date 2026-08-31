@@ -9,6 +9,7 @@ from alphavault.finance_engine import (
 )
 from alphavault.models import Snapshot
 from streamlit_app import compute_dashboard
+from alphavault.robinhood_sync import RobinhoodSyncService
 
 
 def test_company_xirr_with_robinhood_history():
@@ -188,3 +189,13 @@ def test_dashboard_stock_xirr_uses_full_robinhood_history_for_untracked_assets()
     row = metrics[metrics["ticker"] == "HOOD"].iloc[0]
     assert row["xirr"] is not None
     assert pytest.approx(row["xirr"], abs=0.02) == 0.50
+
+
+def test_robinhood_margin_balance_prefers_phoenix_levered_amount():
+    margin_balance = RobinhoodSyncService._extract_margin_balance_usd(
+        account_profile={"cash": "-250.00"},
+        portfolio_profile={"excess_margin": "100.00", "excess_maintenance": "100.00"},
+        phoenix_account=[{"levered_amount": "1234.56", "near_margin_call": False}],
+    )
+
+    assert margin_balance == 1234.56

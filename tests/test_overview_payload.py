@@ -41,3 +41,16 @@ def test_brief_hash_changes_on_change():
     h1 = _brief_portfolio_hash(df1, df1, profile)
     h2 = _brief_portfolio_hash(df2, df2, profile)
     assert h1 != h2
+
+
+def test_portfolio_overview_payload_deducts_margin_balance():
+    df = pd.DataFrame([
+        {"ticker": "ABC", "shares": 10, "avg_cost": 5.0, "cost_basis": 50.0, "equity_usd": 100.0}
+    ])
+    profile = {"cash_usd": 25.0, "margin_balance_usd": 40.0}
+
+    payload = build_portfolio_overview_input(df, df, profile)
+
+    assert payload["totals"]["portfolio_value_usd"] == 100.0
+    assert payload["totals"]["margin_balance_usd"] == 40.0
+    assert payload["totals"]["net_portfolio_value_usd"] == 85.0

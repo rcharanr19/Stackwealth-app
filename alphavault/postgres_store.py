@@ -91,6 +91,8 @@ class PostgresStore:
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 baseline_date DATE NOT NULL,
                 baseline_value_usd NUMERIC(14, 2),
+                margin_balance_usd NUMERIC(14, 2),
+                margin_updated_at TIMESTAMPTZ,
                 baseline_assets TEXT NOT NULL DEFAULT '[]',
                 initialized BOOLEAN NOT NULL DEFAULT FALSE,
                 initialized_at TIMESTAMPTZ,
@@ -104,6 +106,8 @@ class PostgresStore:
             "ALTER TABLE public.portfolio_cache ENABLE ROW LEVEL SECURITY",
             "ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY",
             "ALTER TABLE public.sync_profile ENABLE ROW LEVEL SECURITY",
+            "ALTER TABLE public.sync_profile ADD COLUMN IF NOT EXISTS margin_balance_usd NUMERIC(14, 2)",
+            "ALTER TABLE public.sync_profile ADD COLUMN IF NOT EXISTS margin_updated_at TIMESTAMPTZ",
             "CREATE TABLE IF NOT EXISTS public.ai_analysis_reports (\n                id SERIAL PRIMARY KEY,\n                ticker VARCHAR(32) NOT NULL,\n                analysis_type VARCHAR(64) NOT NULL,\n                model VARCHAR(128),\n                prompt_summary TEXT,\n                report_md TEXT,\n                inputs JSONB,\n                run_by VARCHAR(128),\n                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),\n                expires_at TIMESTAMPTZ\n            )",
             "CREATE TABLE IF NOT EXISTS public.transcripts (\n                id SERIAL PRIMARY KEY,\n                ticker VARCHAR(32),\n                filename VARCHAR(255),\n                content TEXT NOT NULL,\n                source VARCHAR(64),\n                uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()\n            )",
         ]
@@ -414,7 +418,8 @@ class PostgresStore:
     def get_sync_profile(self) -> dict[str, Any] | None:
         df = self._query_df(
             """
-            SELECT baseline_date, baseline_value_usd, baseline_assets, initialized, initialized_at, last_sync_at,
+                        SELECT baseline_date, baseline_value_usd, margin_balance_usd, margin_updated_at,
+                                     baseline_assets, initialized, initialized_at, last_sync_at,
                    sync_version, initial_sync_completed, tracked_tickers
             FROM public.sync_profile
             WHERE id = 1
@@ -444,6 +449,8 @@ class PostgresStore:
         return {
             "baseline_date": str(row.get("baseline_date") or date.today().isoformat()),
             "baseline_value_usd": float(row["baseline_value_usd"]) if row.get("baseline_value_usd") is not None else None,
+            "margin_balance_usd": float(row["margin_balance_usd"]) if row.get("margin_balance_usd") is not None else 0.0,
+            "margin_updated_at": str(row["margin_updated_at"]) if row.get("margin_updated_at") else None,
             "baseline_assets": baseline_assets,
             "initialized": initialized,
             "initialized_at": str(row["initialized_at"]) if row.get("initialized_at") else None,
@@ -462,6 +469,18 @@ class PostgresStore:
             """,
             params={"value": float(value), "updated_at": datetime.utcnow().isoformat()},
             action="Set baseline value",
+        )
+
+    def set_margin_balance_usd(self, value: float) -> None:
+        now = datetime.utcnow().isoformat()
+        self._execute(
+            """
+            UPDATE public.sync_profile
+            SET margin_balance_usd = :value, margin_updated_at = :now, updated_at = :now
+            WHERE id = 1
+            """,
+            params={"value": max(float(value), 0.0), "now": now},
+            action="Set margin balance",
         )
 
     def add_tracked_tickers(self, tickers: set[str]) -> None:

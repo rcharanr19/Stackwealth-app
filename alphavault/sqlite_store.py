@@ -32,6 +32,8 @@ class SQLiteStore:
             "ALTER TABLE sync_profile ADD COLUMN initialized_at TEXT",
             "ALTER TABLE sync_profile ADD COLUMN last_sync_at TEXT",
             "ALTER TABLE sync_profile ADD COLUMN sync_version INTEGER NOT NULL DEFAULT 1",
+            "ALTER TABLE sync_profile ADD COLUMN margin_balance_usd REAL",
+            "ALTER TABLE sync_profile ADD COLUMN margin_updated_at TEXT",
         ]
         for statement in migration_statements:
             try:
@@ -94,6 +96,8 @@ class SQLiteStore:
                     id INTEGER PRIMARY KEY CHECK(id = 1),
                     baseline_date TEXT NOT NULL,
                     baseline_value_usd REAL,
+                    margin_balance_usd REAL,
+                    margin_updated_at TEXT,
                     baseline_assets TEXT NOT NULL DEFAULT '[]',
                     initialized INTEGER NOT NULL DEFAULT 0,
                     initialized_at TEXT,
@@ -444,6 +448,8 @@ class SQLiteStore:
             for column in [
                 "baseline_date",
                 "baseline_value_usd",
+                "margin_balance_usd",
+                "margin_updated_at",
                 "baseline_assets",
                 "initialized",
                 "initialized_at",
@@ -490,6 +496,8 @@ class SQLiteStore:
         return {
             "baseline_date": baseline_date,
             "baseline_value_usd": float(row["baseline_value_usd"]) if "baseline_value_usd" in row.keys() and row["baseline_value_usd"] is not None else None,
+            "margin_balance_usd": float(row["margin_balance_usd"]) if "margin_balance_usd" in row.keys() and row["margin_balance_usd"] is not None else 0.0,
+            "margin_updated_at": str(row["margin_updated_at"]) if "margin_updated_at" in row.keys() and row["margin_updated_at"] else None,
             "baseline_assets": baseline_assets,
             "initialized": initialized,
             "initialized_at": str(row["initialized_at"]) if "initialized_at" in row.keys() and row["initialized_at"] else None,
@@ -511,6 +519,19 @@ class SQLiteStore:
                 WHERE id = 1
                 """,
                 (float(value), now),
+            )
+
+    def set_margin_balance_usd(self, value: float) -> None:
+        now = datetime.utcnow().isoformat()
+        with self._connect() as conn:
+            self._ensure_sync_profile_schema(conn)
+            conn.execute(
+                """
+                UPDATE sync_profile
+                SET margin_balance_usd = ?, margin_updated_at = ?, updated_at = ?
+                WHERE id = 1
+                """,
+                (max(float(value), 0.0), now, now),
             )
 
     def add_tracked_tickers(self, tickers: set[str]) -> None:

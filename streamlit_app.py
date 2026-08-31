@@ -153,7 +153,11 @@ def _brief_portfolio_hash(metrics: pd.DataFrame, portfolio_summary: pd.DataFrame
                 "avg_cost": float(r.get("avg_cost") or 0.0),
                 "current_value": float(r.get("equity_usd") or r.get("current_value") or 0.0),
             })
-        brief = {"rows": sorted(rows, key=lambda x: x["ticker"]), "cash_usd": float(profile.get("cash_usd") or 0.0)}
+        brief = {
+            "rows": sorted(rows, key=lambda x: x["ticker"]),
+            "cash_usd": float(profile.get("cash_usd") or 0.0),
+            "margin_balance_usd": float(profile.get("margin_balance_usd") or 0.0),
+        }
         s = json.dumps(brief, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(s.encode("utf-8")).hexdigest()
     except Exception:
@@ -167,7 +171,9 @@ def build_portfolio_overview_input(metrics: pd.DataFrame, portfolio_summary: pd.
     totals = {
         "portfolio_value_usd": float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0,
         "cash_usd": float(profile.get("cash_usd") or 0.0) if isinstance(profile, dict) else 0.0,
+        "margin_balance_usd": float(profile.get("margin_balance_usd") or 0.0) if isinstance(profile, dict) else 0.0,
     }
+    totals["net_portfolio_value_usd"] = totals["portfolio_value_usd"] + totals["cash_usd"] - totals["margin_balance_usd"]
     totals["cash_weight_pct"] = (totals["cash_usd"] / totals["portfolio_value_usd"] * 100.0) if totals["portfolio_value_usd"] > 0 else 0.0
     if since_start and since_start.get("xirr") is not None:
         totals["portfolio_xirr_pct"] = round(float(since_start["xirr"]) * 100.0, 2)
@@ -674,6 +680,8 @@ def main() -> None:
             st.info("No active holdings found in Supabase yet.")
         else:
             total_value = float(portfolio_summary["current_value"].sum(skipna=True))
+            margin_balance = float(profile.get("margin_balance_usd") or 0.0)
+            net_portfolio_value = total_value - margin_balance
             total_cost = float(portfolio_summary["cost_basis"].sum(skipna=True))
             total_open_pnl = float(portfolio_summary["open_pnl"].sum(skipna=True))
             total_change_pct = ((total_open_pnl / total_cost) * 100.0) if total_cost > 0 else None
@@ -685,10 +693,11 @@ def main() -> None:
             day_change_pct = (portfolio_summary_filled["last_day_change_pct"] * portfolio_summary_filled["weight_pct"] / 100.0).sum()
 
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-            kpi1.metric("Current Value", f"${total_value:,.2f}")
-            kpi2.metric("Total P&L", f"${total_open_pnl:,.2f}")
+            kpi1.metric("Net Portfolio Value", f"${net_portfolio_value:,.2f}", help="Gross holdings minus Robinhood margin balance.")
+            kpi2.metric("Margin Balance", f"${margin_balance:,.2f}")
             kpi3.metric("Total Change %", "N/A" if total_change_pct is None else f"{total_change_pct:+.2f}%")
             kpi4.metric("Day Change %", f"{day_change_pct:+.2f}%")
+            st.caption(f"Gross holdings: ${total_value:,.2f} | Total P&L: ${total_open_pnl:,.2f}")
 
             display = portfolio_summary[
                 [
