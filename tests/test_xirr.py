@@ -199,3 +199,64 @@ def test_robinhood_margin_balance_prefers_phoenix_levered_amount():
     )
 
     assert margin_balance == 1234.56
+
+
+def test_robinhood_margin_balance_uses_linked_margin_balances():
+    margin_balance = RobinhoodSyncService._extract_margin_balance_usd(
+        account_profile={"margin_balances": "https://api.robinhood.com/margin/accounts/abc/"},
+        portfolio_profile={},
+        phoenix_account={},
+        margin_balances={"outstanding_margin_balance": "4567.89"},
+    )
+
+    assert margin_balance == 4567.89
+
+
+def test_robinhood_margin_balance_records_zero_when_margin_response_has_no_debt():
+    margin_balance = RobinhoodSyncService._extract_margin_balance_usd(
+        account_profile={},
+        portfolio_profile={},
+        phoenix_account={},
+        margin_balances={"margin_limit": "10000.00", "cash": "25.00"},
+    )
+
+    assert margin_balance == 0.0
+
+
+def test_robinhood_sync_margin_balance_follows_link_and_persists():
+    class FakeProfiles:
+        @staticmethod
+        def load_account_profile(account_number=None):
+            return {"margin_balances": "https://api.robinhood.com/margin/accounts/abc/"}
+
+        @staticmethod
+        def load_portfolio_profile(account_number=None):
+            return {}
+
+    class FakeAccount:
+        @staticmethod
+        def load_phoenix_account():
+            return {}
+
+    class FakeRobinhood:
+        profiles = FakeProfiles()
+        account = FakeAccount()
+
+        @staticmethod
+        def request_get(url):
+            assert url == "https://api.robinhood.com/margin/accounts/abc/"
+            return {"outstanding_margin_balance": "321.09"}
+
+    class FakeDb:
+        def __init__(self):
+            self.margin_balance = None
+
+        def set_margin_balance_usd(self, value):
+            self.margin_balance = value
+
+    fake_db = FakeDb()
+    service = RobinhoodSyncService(fake_db, market_service=None)
+
+    service._sync_margin_balance(FakeRobinhood(), account_number=None)
+
+    assert fake_db.margin_balance == 321.09

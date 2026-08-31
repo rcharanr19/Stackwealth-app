@@ -88,7 +88,13 @@ class RobinhoodSyncService:
             return None
 
     @classmethod
-    def _extract_margin_balance_usd(cls, account_profile: Any, portfolio_profile: Any, phoenix_account: Any) -> float | None:
+    def _extract_margin_balance_usd(
+        cls,
+        account_profile: Any,
+        portfolio_profile: Any,
+        phoenix_account: Any,
+        margin_balances: Any = None,
+    ) -> float | None:
         phoenix_rows = phoenix_account if isinstance(phoenix_account, list) else [phoenix_account]
         for row in phoenix_rows:
             if not isinstance(row, dict):
@@ -97,13 +103,36 @@ class RobinhoodSyncService:
             if value is not None:
                 return max(value, 0.0)
 
+        balance_sources = []
+        if isinstance(margin_balances, dict):
+            balance_sources.append(margin_balances)
         if isinstance(account_profile, dict):
-            margin_balances = account_profile.get("margin_balances")
-            if isinstance(margin_balances, dict):
-                for key in ("outstanding_margin_balance", "margin_used", "levered_amount"):
-                    value = cls._safe_float(margin_balances.get(key))
-                    if value is not None:
-                        return max(value, 0.0)
+            account_margin_balances = account_profile.get("margin_balances")
+            if isinstance(account_margin_balances, dict):
+                balance_sources.append(account_margin_balances)
+
+        for source in balance_sources:
+            for key in (
+                "outstanding_margin_balance",
+                "margin_used",
+                "margin_balance",
+                "margin_debit",
+                "debit_balance",
+                "levered_amount",
+            ):
+                value = cls._safe_float(source.get(key))
+                if value is not None:
+                    return max(value, 0.0)
+
+            for key in ("cash", "uninvested_cash"):
+                value = cls._safe_float(source.get(key))
+                if value is not None and value < 0:
+                    return abs(value)
+
+        if balance_sources:
+            return 0.0
+
+        if isinstance(account_profile, dict):
             cash = cls._safe_float(account_profile.get("cash"))
             if cash is not None and cash < 0:
                 return abs(cash)
@@ -116,6 +145,19 @@ class RobinhoodSyncService:
 
         return None
 
+    @staticmethod
+    def _load_linked_margin_balances(robinhood_module: Any, account_profile: Any) -> Any:
+        if not isinstance(account_profile, dict):
+            return None
+        margin_balances = account_profile.get("margin_balances")
+        if isinstance(margin_balances, dict):
+            return margin_balances
+        if isinstance(margin_balances, str) and margin_balances.startswith("http"):
+            request_get = getattr(robinhood_module, "request_get", None)
+            if callable(request_get):
+                return request_get(margin_balances)
+        return None
+
     def _sync_margin_balance(self, robinhood_module: Any, account_number: str | None) -> None:
         setter = getattr(self.db, "set_margin_balance_usd", None)
         if not callable(setter):
@@ -125,10 +167,18 @@ class RobinhoodSyncService:
             account_profile = robinhood_module.profiles.load_account_profile(account_number=account_number)
             portfolio_profile = robinhood_module.profiles.load_portfolio_profile(account_number=account_number)
             phoenix_account = robinhood_module.account.load_phoenix_account()
-            margin_balance = self._extract_margin_balance_usd(account_profile, portfolio_profile, phoenix_account)
+            margin_balances = self._load_linked_margin_balances(robinhood_module, account_profile)
+            margin_balance = self._extract_margin_balance_usd(
+                account_profile,
+                portfolio_profile,
+                phoenix_account,
+                margin_balances=margin_balances,
+            )
             if margin_balance is not None:
                 setter(margin_balance)
                 LOGGER.info("Updated Robinhood margin balance: %.2f", margin_balance)
+            else:
+                LOGGER.warning("Robinhood margin balance was unavailable in account, portfolio, and Phoenix responses.")
         except Exception:
             LOGGER.exception("Unable to update Robinhood margin balance; continuing sync.")
 
