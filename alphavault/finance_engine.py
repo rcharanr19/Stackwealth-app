@@ -182,6 +182,79 @@ def _position_pnl_from_transactions(transactions: list[Transaction]) -> tuple[fl
     return realized, shares, avg_cost, total_buy_cost
 
 
+def _open_lot_transactions(
+    transactions: list[Transaction],
+    current_shares: float,
+    avg_price: float,
+    currency: str,
+    baseline_date: date | None,
+    ticker: str,
+) -> list[Transaction]:
+    if current_shares <= EPSILON:
+        return []
+
+    lots: list[list[float | date]] = []
+    cash_inflows: list[Transaction] = []
+    for tx in sorted(transactions, key=_sort_transaction_key):
+        side = _normalised_side(tx)
+        qty = float(tx.shares or 0.0)
+        px = float(tx.price or 0.0)
+        amount = float(tx.amount)
+
+        if side == "buy" and qty > 0:
+            unit_cost = abs(amount) / qty if amount else px
+            if unit_cost > 0:
+                lots.append([tx.tx_date, qty, unit_cost])
+            continue
+
+        if side == "sell" and qty > 0:
+            remaining = qty
+            while remaining > EPSILON and lots:
+                lot_qty = float(lots[0][1])
+                consumed = min(lot_qty, remaining)
+                lots[0][1] = lot_qty - consumed
+                remaining -= consumed
+                if float(lots[0][1]) <= EPSILON:
+                    lots.pop(0)
+            continue
+
+        if amount > 0 and qty <= 0 and px <= 0:
+            cash_inflows.append(tx)
+
+    lot_shares = sum(float(lot[1]) for lot in lots)
+    excess_shares = lot_shares - current_shares
+    while excess_shares > EPSILON and lots:
+        lot_qty = float(lots[0][1])
+        consumed = min(lot_qty, excess_shares)
+        lots[0][1] = lot_qty - consumed
+        excess_shares -= consumed
+        if float(lots[0][1]) <= EPSILON:
+            lots.pop(0)
+
+    lot_shares = sum(float(lot[1]) for lot in lots)
+    missing_shares = current_shares - lot_shares
+    if missing_shares > EPSILON and avg_price > 0 and baseline_date is not None and baseline_date < date.today():
+        lots.insert(0, [baseline_date, missing_shares, avg_price])
+
+    open_transactions = [
+        Transaction(
+            ticker=ticker,
+            tx_date=lot[0],
+            amount=-(float(lot[1]) * float(lot[2])),
+            side="buy",
+            shares=float(lot[1]),
+            price=float(lot[2]),
+            currency=currency,
+        )
+        for lot in lots
+        if float(lot[1]) > EPSILON and float(lot[2]) > 0
+    ]
+    if open_transactions:
+        first_open_date = min(tx.tx_date for tx in open_transactions)
+        open_transactions.extend(tx for tx in cash_inflows if tx.tx_date >= first_open_date)
+    return open_transactions
+
+
 def build_metrics_table(
     positions: list[Position],
     transactions: list[Transaction],
@@ -245,19 +318,11 @@ def build_metrics_table(
         current_price_usd = price * fx_rate if np.isfinite(price) and np.isfinite(fx_rate) else np.nan
 
         terminal_value_native = equity_native if current_shares > 0 else 0.0
-        effective_transactions = ticker_transactions
-        if not effective_transactions and current_shares > 0 and avg_price > 0 and baseline_date is not None and baseline_date < date.today():
-            effective_transactions = [
-                Transaction(
-                    ticker=pos.ticker,
-                    tx_date=baseline_date,
-                    amount=-(current_shares * avg_price),
-                    side="buy",
-                    shares=current_shares,
-                    price=avg_price,
-                    currency=pos.currency,
-                )
-            ]
+        effective_transactions = (
+            _open_lot_transactions(ticker_transactions, current_shares, avg_price, pos.currency, baseline_date, pos.ticker)
+            if current_shares > 0
+            else ticker_transactions
+        )
 
         xirr = compute_xirr(effective_transactions, float(terminal_value_native) if np.isfinite(terminal_value_native) else 0.0)
 

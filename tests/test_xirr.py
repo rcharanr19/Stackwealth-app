@@ -126,6 +126,27 @@ def test_xirr_prefers_positive_root_when_net_return_is_positive():
     assert pytest.approx(xirr, abs=0.001) == 0.0039
 
 
+def test_metrics_stock_xirr_uses_open_lots_for_active_holdings():
+    today = date.today()
+    positions = [
+        Position(ticker="OPEN", company_name="Open Lots Inc", shares=10.0, avg_price=100.0, currency="USD"),
+    ]
+    transactions = [
+        Transaction(ticker="OPEN", tx_date=today - timedelta(days=365 * 5), amount=-1000.0, side="buy", shares=10.0, price=100.0, currency="USD"),
+        Transaction(ticker="OPEN", tx_date=today - timedelta(days=365 * 4), amount=500.0, side="sell", shares=10.0, price=50.0, currency="USD"),
+        Transaction(ticker="OPEN", tx_date=today - timedelta(days=365), amount=-1000.0, side="buy", shares=10.0, price=100.0, currency="USD"),
+    ]
+    quotes = {"OPEN": Quote(price=180.0, market_cap=1_000_000_000.0)}
+
+    df = build_metrics_table(positions, transactions, quotes, {"USD": 1.0}, baseline_date=today - timedelta(days=365 * 6))
+
+    row = df[df["ticker"] == "OPEN"].iloc[0]
+    assert row["total_change_pct"] > 0.0
+    assert row["xirr"] is not None
+    assert row["xirr"] > 0.0
+    assert pytest.approx(row["xirr"], abs=0.02) == 0.80
+
+
 def test_dashboard_stock_xirr_uses_full_robinhood_history_for_untracked_assets():
     one_year_ago = date.today() - timedelta(days=365)
     hood_position = Position(ticker="HOOD", company_name="Robinhood", shares=4.0, avg_price=10.0, currency="USD")
