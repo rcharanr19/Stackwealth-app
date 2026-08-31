@@ -75,6 +75,23 @@ def compute_xirr(transactions: Iterable[Transaction], terminal_value: float) -> 
         LOGGER.debug("XIRR skipped because the cashflow set does not have both inflows and outflows")
         return None
 
+    start_date = flows[0][0]
+    end_date = flows[-1][0]
+    holding_days = (end_date - start_date).days
+
+    if holding_days < 365:
+        total_invested = sum(-amt for _, amt in flows if amt < 0)
+        total_returned = sum(amt for _, amt in flows if amt > 0)
+        if total_invested > 0:
+            abs_return = (total_returned - total_invested) / total_invested
+            LOGGER.debug(
+                "Holding period %d days < 365 days; returning absolute return %.4f",
+                holding_days,
+                abs_return,
+            )
+            return abs_return
+        return None
+
     result = _xirr_fallback(flows)
     LOGGER.debug("XIRR computation result: %s", result)
     return result
@@ -150,6 +167,7 @@ def build_metrics_table(
     quotes: dict[str, Quote],
     fx_to_usd: dict[str, float],
     stale_tickers: set[str] | None = None,
+    baseline_date: date | None = None,
 ) -> pd.DataFrame:
     LOGGER.debug("Building metrics table for %d positions and %d transactions", len(positions), len(transactions))
     rows: list[dict[str, float | str | None]] = []
@@ -179,6 +197,9 @@ def build_metrics_table(
         total_native = realized_native + (unrealized_native if np.isfinite(unrealized_native) else 0.0)
 
         total_change_pct = (total_native / total_buy_cost_native) * 100.0 if total_buy_cost_native > 0 else np.nan
+        if np.isnan(total_change_pct) and current_shares > 0 and avg_price > 0 and np.isfinite(price):
+            total_change_pct = ((price - avg_price) / avg_price) * 100.0
+
         last_day_change_pct = (
             ((price - previous_close) / previous_close) * 100.0
             if np.isfinite(price) and np.isfinite(previous_close) and previous_close > 0
@@ -203,7 +224,21 @@ def build_metrics_table(
         current_price_usd = price * fx_rate if np.isfinite(price) and np.isfinite(fx_rate) else np.nan
 
         terminal_value_native = equity_native if current_shares > 0 else 0.0
-        xirr = compute_xirr(ticker_transactions, float(terminal_value_native) if np.isfinite(terminal_value_native) else 0.0)
+        effective_transactions = ticker_transactions
+        if not effective_transactions and current_shares > 0 and avg_price > 0 and baseline_date is not None and baseline_date < date.today():
+            effective_transactions = [
+                Transaction(
+                    ticker=pos.ticker,
+                    tx_date=baseline_date,
+                    amount=-(current_shares * avg_price),
+                    side="buy",
+                    shares=current_shares,
+                    price=avg_price,
+                    currency=pos.currency,
+                )
+            ]
+
+        xirr = compute_xirr(effective_transactions, float(terminal_value_native) if np.isfinite(terminal_value_native) else 0.0)
 
         rows.append(
             {
@@ -402,7 +437,7 @@ def compute_portfolio_since_start_metrics(
     for tx in transactions:
         if tracked and tx.ticker not in tracked:
             continue
-        if tx.tx_date < baseline_date:
+        if tx.tx_date <= baseline_date:
             continue
         ccy = currency_by_ticker.get(tx.ticker, "USD")
         rate = fx_to_usd.get(ccy, 1.0)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import logging
 from datetime import date, datetime
@@ -159,7 +160,7 @@ def _brief_portfolio_hash(metrics: pd.DataFrame, portfolio_summary: pd.DataFrame
         return ""
 
 
-def build_portfolio_overview_input(metrics: pd.DataFrame, portfolio_summary: pd.DataFrame, profile: dict[str, Any]) -> dict[str, Any]:
+def build_portfolio_overview_input(metrics: pd.DataFrame, portfolio_summary: pd.DataFrame, profile: dict[str, Any], since_start: dict[str, Any] | None = None) -> dict[str, Any]:
     """Construct the deterministic payload consumed by the portfolio overview generator."""
     now_iso = datetime.utcnow().isoformat()
 
@@ -168,11 +169,14 @@ def build_portfolio_overview_input(metrics: pd.DataFrame, portfolio_summary: pd.
         "cash_usd": float(profile.get("cash_usd") or 0.0) if isinstance(profile, dict) else 0.0,
     }
     totals["cash_weight_pct"] = (totals["cash_usd"] / totals["portfolio_value_usd"] * 100.0) if totals["portfolio_value_usd"] > 0 else 0.0
+    if since_start and since_start.get("xirr") is not None:
+        totals["portfolio_xirr_pct"] = round(float(since_start["xirr"]) * 100.0, 2)
 
     # Build holdings list from metrics (fallback to portfolio_summary)
     frame = metrics if not metrics.empty else portfolio_summary
     holdings: list[dict[str, Any]] = []
     for _, r in frame.iterrows():
+        xirr_val = _safe_float(r.get("xirr"))
         holdings.append(
             {
                 "ticker": str(r.get("ticker")),
@@ -184,6 +188,7 @@ def build_portfolio_overview_input(metrics: pd.DataFrame, portfolio_summary: pd.
                 "weight_pct": float(r.get("weight_pct") or 0.0),
                 "day_change_pct": float(r.get("last_day_change_pct") or 0.0),
                 "pnl_total_usd": float(r.get("pnl_usd") or 0.0),
+                "xirr_pct": round(xirr_val * 100.0, 2) if xirr_val is not None else None,
                 "segment_exposure": r.get("segment") or r.get("company_name") or "Unknown",
             }
         )
@@ -431,7 +436,7 @@ def compute_dashboard(db: PostgresStore, market_service: MarketDataService) -> t
     positions, transactions = db.load_portfolio_state()
     baseline_date = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
     tracked_assets = set(profile.get("tracked_tickers") or profile.get("baseline_assets") or [])
-    tx_for_metrics = [
+    tx_since_start = [
         tx
         for tx in transactions
         if tx.tx_date >= baseline_date and (not tracked_assets or tx.ticker in tracked_assets)
@@ -442,10 +447,11 @@ def compute_dashboard(db: PostgresStore, market_service: MarketDataService) -> t
     snapshot = market_service.refresh_snapshot(tickers=tickers, currencies=currencies)
     metrics = build_metrics_table(
         positions=positions,
-        transactions=tx_for_metrics,
+        transactions=transactions,
         quotes=snapshot.quotes,
         fx_to_usd=snapshot.fx_to_usd,
         stale_tickers=snapshot.stale_tickers,
+        baseline_date=baseline_date,
     )
     db.update_market_snapshot(metrics.to_dict(orient="records"))
 
@@ -469,7 +475,7 @@ def compute_dashboard(db: PostgresStore, market_service: MarketDataService) -> t
             baseline_value = 0.0
 
     since_start = compute_portfolio_since_start_metrics(
-        tx_for_metrics,
+        tx_since_start,
         positions,
         snapshot.quotes,
         snapshot.fx_to_usd,
@@ -547,12 +553,14 @@ def _open_robinhood_dialog(sync_service: RobinhoodSyncService) -> None:
 def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
     total_value = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
     total_pnl = float(metrics["pnl_usd"].sum(skipna=True)) if "pnl_usd" in metrics else 0.0
-    cols = st.columns(3)
+    cols = st.columns(4)
     cols[0].metric("Total Value", f"${abs(total_value):,.0f}")
     pnl_sign = "+" if total_pnl >= 0 else "-"
     cols[1].metric("All-Time P&L", f"{pnl_sign}${abs(total_pnl):,.0f}")
     change_pct = since_start.get("change_pct")
-    cols[2].metric("Change", "N/A" if change_pct is None else f"{float(change_pct):+.2f}%")
+    cols[2].metric("Total Return", "N/A" if change_pct is None else f"{float(change_pct):+.2f}%")
+    xirr_val = since_start.get("xirr")
+    cols[3].metric("Portfolio XIRR", "N/A" if xirr_val is None else f"{float(xirr_val) * 100.0:+.2f}%")
 
 
 def main() -> None:
@@ -628,6 +636,8 @@ def main() -> None:
             
             # Provide market cap tier for display
             portfolio_summary["market_cap_tier"] = portfolio_summary.get("market_cap").apply(_market_cap_tier)
+            # Express XIRR as percentage for table display
+            portfolio_summary["xirr_pct"] = (portfolio_summary["xirr"] * 100.0).where(portfolio_summary["xirr"].notna())
     except Exception as exc:
         st.error(f"Unable to load holdings and market data: {exc}")
         st.stop()
@@ -692,6 +702,7 @@ def main() -> None:
                     "current_value",
                     "unrealized_pnl_pct",
                     "total_pnl_pct",
+                    "xirr_pct",
                     "open_pnl",
                     "weight_pct",
                 ]
@@ -707,6 +718,7 @@ def main() -> None:
                     "current_value": "Current Value",
                     "unrealized_pnl_pct": "Unrealized P&L %",
                     "total_pnl_pct": "Total P&L %",
+                    "xirr_pct": "XIRR %",
                     "open_pnl": "Total P&L",
                     "weight_pct": "Weight %",
                 }
@@ -722,18 +734,19 @@ def main() -> None:
                     "Current Value": _fmt_currency_2,
                     "Unrealized P&L %": "{:+.2f}%",
                     "Total P&L %": "{:+.2f}%",
+                    "XIRR %": lambda v: f"{float(v):+.2f}%" if pd.notna(v) else "N/A",
                     "Total P&L": _fmt_currency_2,
                     "Weight %": "{:.2f}%",
                 }
             )
 
-            styled = styler.map(style_signed_value, subset=["Total P&L", "Unrealized P&L %", "Total P&L %", "Day Change %"])
+            styled = styler.map(style_signed_value, subset=["Total P&L", "Unrealized P&L %", "Total P&L %", "XIRR %", "Day Change %"])
             st.dataframe(styled, width="stretch")
 
             if st.button("Run AI Overview", key="run_ai_overview", width="stretch"):
                 try:
                     with st.spinner("Building portfolio payload..."):
-                        payload = build_portfolio_overview_input(metrics, portfolio_summary, profile)
+                        payload = build_portfolio_overview_input(metrics, portfolio_summary, profile, since_start)
                     with st.spinner("Generating portfolio overview (LLM)..."):
                         report = generate_portfolio_ai_overview(payload)
                     st.markdown(report)

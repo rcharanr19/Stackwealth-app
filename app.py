@@ -250,6 +250,7 @@ class HoldingsTable(ctk.CTkScrollableFrame):
                 details = [
                     (f"Unrealized: {fmt_money(unrealized_pnl, out_ccy)}", PALETTE["muted"]),
                     (f"Total Change: {fmt_pct(total_change_pct)}", PALETTE["muted"]),
+                    (f"XIRR: {fmt_pct(xirr * 100 if xirr is not None else np.nan)}", PALETTE["muted"]),
                 ]
                 if is_closed:
                     details.insert(1, (f"Realized: {fmt_money(realized_pnl, out_ccy)}", PALETTE["muted"]))
@@ -315,8 +316,9 @@ class StackWealthApp(ctk.CTk):
         self.snapshot: Snapshot | None = None
         self.metrics = None
         self.portfolio_change_pct: float | None = None
+        self.portfolio_xirr: float | None = None
 
-        self.result_queue: queue.Queue[tuple[Snapshot, Any, float | None]] = queue.Queue()
+        self.result_queue: queue.Queue[tuple[Snapshot, Any, float | None, float | None]] = queue.Queue()
         self.sync_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.refresh_in_progress = False
         self.sync_in_progress = False
@@ -363,14 +365,15 @@ class StackWealthApp(ctk.CTk):
     def _build_ui(self) -> None:
         header = ctk.CTkFrame(self, fg_color=PALETTE["panel"], corner_radius=18)
         header.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
-        header.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        header.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
         self.kpi_total_value = self._make_kpi_card(header, 0, "Total Value", "Loading...")
         self.kpi_total_pnl = self._make_kpi_card(header, 1, "All-Time P&L", "Loading...")
         self.kpi_change = self._make_kpi_card(header, 2, "Total Return %", "Loading...")
+        self.kpi_xirr = self._make_kpi_card(header, 3, "Portfolio XIRR", "Loading...")
 
         control_panel = ctk.CTkFrame(header, fg_color="transparent")
-        control_panel.grid(row=0, column=3, sticky="nsew", padx=10, pady=10)
+        control_panel.grid(row=0, column=4, sticky="nsew", padx=10, pady=10)
         control_panel.grid_columnconfigure(0, weight=1)
 
         toolbar_row = ctk.CTkFrame(control_panel, fg_color="transparent")
@@ -1068,7 +1071,7 @@ class StackWealthApp(ctk.CTk):
 
         baseline_date = date.fromisoformat(str(profile.get("baseline_date"))) if profile else date.today()
         tracked_tickers = set(profile.get("tracked_tickers", [])) if profile else set()
-        tx_for_metrics = [
+        tx_since_start = [
             tx
             for tx in self.transactions
             if tx.tx_date >= baseline_date and (not tracked_tickers or tx.ticker in tracked_tickers)
@@ -1077,10 +1080,11 @@ class StackWealthApp(ctk.CTk):
         snapshot = self.market_service.refresh_snapshot(tickers=tickers, currencies=currencies)
         metrics = build_metrics_table(
             positions=self.positions,
-            transactions=tx_for_metrics,
+            transactions=self.transactions,
             quotes=snapshot.quotes,
             fx_to_usd=snapshot.fx_to_usd,
             stale_tickers=snapshot.stale_tickers,
+            baseline_date=baseline_date,
         )
         self.db.update_market_snapshot(metrics.to_dict(orient="records"))
         baseline_value_raw = profile.get("baseline_value_usd") if profile else None
@@ -1103,7 +1107,7 @@ class StackWealthApp(ctk.CTk):
                 baseline_value = 0.0
 
         since_start = compute_portfolio_since_start_metrics(
-            tx_for_metrics,
+            tx_since_start,
             self.positions,
             snapshot.quotes,
             snapshot.fx_to_usd,
@@ -1115,17 +1119,18 @@ class StackWealthApp(ctk.CTk):
             "Market refresh complete. online=%s tracked_tickers=%d tx_used=%d",
             snapshot.online,
             len(tracked_tickers),
-            len(tx_for_metrics),
+            len(tx_since_start),
         )
-        self.result_queue.put((snapshot, metrics, since_start.get("change_pct")))
+        self.result_queue.put((snapshot, metrics, since_start.get("change_pct"), since_start.get("xirr")))
 
     def _poll_queue(self) -> None:
         try:
             try:
-                snapshot, metrics, portfolio_change_pct = self.result_queue.get_nowait()
+                snapshot, metrics, portfolio_change_pct, portfolio_xirr = self.result_queue.get_nowait()
                 self.snapshot = snapshot
                 self.metrics = metrics
                 self.portfolio_change_pct = portfolio_change_pct
+                self.portfolio_xirr = portfolio_xirr
                 self.refresh_in_progress = False
                 self.refresh_ui()
             except queue.Empty:
@@ -1233,6 +1238,10 @@ class StackWealthApp(ctk.CTk):
         change_value = self.portfolio_change_pct
         self.kpi_change._title_label.configure(text="Total Return % (Since Start)")
         self.kpi_change.configure(text=fmt_pct(change_value))
+
+        xirr_value = self.portfolio_xirr
+        self.kpi_xirr._title_label.configure(text="Portfolio XIRR")
+        self.kpi_xirr.configure(text=fmt_pct(xirr_value * 100.0 if xirr_value is not None else np.nan))
 
         status_text = "● Online" if self.snapshot.online else "● Offline (cache)"
         status_color = PALETTE["gain"] if self.snapshot.online else PALETTE["loss"]
