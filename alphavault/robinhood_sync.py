@@ -95,13 +95,28 @@ class RobinhoodSyncService:
         phoenix_account: Any,
         margin_balances: Any = None,
     ) -> float | None:
+        saw_margin_data = False
+        zero_candidate = False
+
+        def choose_value(raw: Any) -> float | None:
+            nonlocal saw_margin_data, zero_candidate
+            value = cls._safe_float(raw)
+            if value is None:
+                return None
+            saw_margin_data = True
+            if value > 0:
+                return value
+            if value == 0:
+                zero_candidate = True
+            return None
+
         phoenix_rows = phoenix_account if isinstance(phoenix_account, list) else [phoenix_account]
         for row in phoenix_rows:
             if not isinstance(row, dict):
                 continue
-            value = cls._safe_float(row.get("levered_amount"))
+            value = choose_value(row.get("levered_amount"))
             if value is not None:
-                return max(value, 0.0)
+                return value
 
         balance_sources = []
         if isinstance(margin_balances, dict):
@@ -120,28 +135,34 @@ class RobinhoodSyncService:
                 "debit_balance",
                 "levered_amount",
             ):
-                value = cls._safe_float(source.get(key))
+                value = choose_value(source.get(key))
                 if value is not None:
-                    return max(value, 0.0)
+                    return value
 
             for key in ("cash", "uninvested_cash"):
                 value = cls._safe_float(source.get(key))
                 if value is not None and value < 0:
+                    saw_margin_data = True
                     return abs(value)
 
         if balance_sources:
-            return 0.0
+            saw_margin_data = True
 
         if isinstance(account_profile, dict):
             cash = cls._safe_float(account_profile.get("cash"))
             if cash is not None and cash < 0:
+                saw_margin_data = True
                 return abs(cash)
 
         if isinstance(portfolio_profile, dict):
             excess_margin = cls._safe_float(portfolio_profile.get("excess_margin"))
             excess_maintenance = cls._safe_float(portfolio_profile.get("excess_maintenance"))
             if excess_margin is not None and excess_maintenance is not None and excess_margin < 0:
+                saw_margin_data = True
                 return abs(excess_margin)
+
+        if saw_margin_data or zero_candidate:
+            return 0.0
 
         return None
 

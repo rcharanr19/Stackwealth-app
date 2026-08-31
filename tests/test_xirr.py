@@ -212,6 +212,17 @@ def test_robinhood_margin_balance_uses_linked_margin_balances():
     assert margin_balance == 4567.89
 
 
+def test_robinhood_margin_balance_checks_link_when_phoenix_is_zero():
+    margin_balance = RobinhoodSyncService._extract_margin_balance_usd(
+        account_profile={"margin_balances": "https://api.robinhood.com/margin/accounts/abc/"},
+        portfolio_profile={},
+        phoenix_account={"levered_amount": "0.00"},
+        margin_balances={"outstanding_margin_balance": "4567.89"},
+    )
+
+    assert margin_balance == 4567.89
+
+
 def test_robinhood_margin_balance_records_zero_when_margin_response_has_no_debt():
     margin_balance = RobinhoodSyncService._extract_margin_balance_usd(
         account_profile={},

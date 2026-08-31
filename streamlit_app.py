@@ -697,7 +697,8 @@ def main() -> None:
             kpi2.metric("Margin Balance", f"${margin_balance:,.2f}")
             kpi3.metric("Total Change %", "N/A" if total_change_pct is None else f"{total_change_pct:+.2f}%")
             kpi4.metric("Day Change %", f"{day_change_pct:+.2f}%")
-            st.caption(f"Gross holdings: ${total_value:,.2f} | Total P&L: ${total_open_pnl:,.2f}")
+            margin_updated = _fmt_iso_ts(profile.get("margin_updated_at")) or "not synced"
+            st.caption(f"Gross holdings: ${total_value:,.2f} | Total P&L: ${total_open_pnl:,.2f} | Margin synced: {margin_updated}")
 
             display = portfolio_summary[
                 [
