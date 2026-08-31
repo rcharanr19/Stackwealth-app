@@ -57,6 +57,13 @@ class RobinhoodSyncService:
         return str(value or "").upper().strip()
 
     @staticmethod
+    def _normalize_account_number(value: Any) -> str | None:
+        account_number = str(value or "").strip()
+        if not account_number or account_number.lower() == "default":
+            return None
+        return account_number
+
+    @staticmethod
     def _is_login_success(login_resp: Any) -> bool:
         if not login_resp:
             return False
@@ -179,16 +186,71 @@ class RobinhoodSyncService:
                 return request_get(margin_balances)
         return None
 
+    @classmethod
+    def _candidate_margin_urls(cls, account_number: str | None, account_profile: Any) -> list[str]:
+        account_numbers = []
+        for raw in (account_number,):
+            normalized = cls._normalize_account_number(raw)
+            if normalized:
+                account_numbers.append(normalized)
+        if isinstance(account_profile, dict):
+            for key in ("account_number", "rhs_account_number"):
+                normalized = cls._normalize_account_number(account_profile.get(key))
+                if normalized:
+                    account_numbers.append(normalized)
+
+        urls = []
+        for number in dict.fromkeys(account_numbers):
+            urls.extend(
+                [
+                    f"https://api.robinhood.com/margin/accounts/{number}/",
+                    f"https://api.robinhood.com/accounts/{number}/margin_balances/",
+                ]
+            )
+        return urls
+
+    @staticmethod
+    def _load_direct_margin_balances(robinhood_module: Any, account_number: str | None, account_profile: Any) -> Any:
+        request_get = getattr(robinhood_module, "request_get", None)
+        if not callable(request_get):
+            return None
+
+        for url in RobinhoodSyncService._candidate_margin_urls(account_number, account_profile):
+            data = request_get(url)
+            if isinstance(data, dict) and data:
+                return data
+        return None
+
+    @staticmethod
+    def _payload_keys(payload: Any) -> list[str]:
+        if isinstance(payload, dict):
+            return sorted(str(key) for key in payload.keys())
+        if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            return sorted(str(key) for key in payload[0].keys())
+        return []
+
     def _sync_margin_balance(self, robinhood_module: Any, account_number: str | None) -> None:
         setter = getattr(self.db, "set_margin_balance_usd", None)
         if not callable(setter):
+            LOGGER.warning("Robinhood margin sync skipped because the store cannot persist margin balance.")
             return
 
         try:
+            account_number = self._normalize_account_number(account_number)
+            LOGGER.info("Fetching Robinhood margin details for account=%s.", mask_account(account_number))
             account_profile = robinhood_module.profiles.load_account_profile(account_number=account_number)
             portfolio_profile = robinhood_module.profiles.load_portfolio_profile(account_number=account_number)
             phoenix_account = robinhood_module.account.load_phoenix_account()
             margin_balances = self._load_linked_margin_balances(robinhood_module, account_profile)
+            if margin_balances is None:
+                margin_balances = self._load_direct_margin_balances(robinhood_module, account_number, account_profile)
+            LOGGER.info(
+                "Robinhood margin response keys: account=%s portfolio=%s phoenix=%s margin=%s.",
+                self._payload_keys(account_profile),
+                self._payload_keys(portfolio_profile),
+                self._payload_keys(phoenix_account),
+                self._payload_keys(margin_balances),
+            )
             margin_balance = self._extract_margin_balance_usd(
                 account_profile,
                 portfolio_profile,
@@ -227,9 +289,10 @@ class RobinhoodSyncService:
         mfa_callback: Callable[[], str],
         status_callback: Callable[[str], None] | None = None,
         password: str | None = None,
-        account_number: str | None = None,
+            account_number: str | None = None,
         push_only: bool = False,
     ) -> SyncResult:
+        account_number = self._normalize_account_number(account_number)
         LOGGER.info(
             "Starting Robinhood sync for user=%s account=%s.",
             mask_email(email),

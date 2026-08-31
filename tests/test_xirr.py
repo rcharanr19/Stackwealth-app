@@ -271,3 +271,43 @@ def test_robinhood_sync_margin_balance_follows_link_and_persists():
     service._sync_margin_balance(FakeRobinhood(), account_number=None)
 
     assert fake_db.margin_balance == 321.09
+
+
+def test_robinhood_sync_margin_balance_tries_direct_account_endpoint():
+    class FakeProfiles:
+        @staticmethod
+        def load_account_profile(account_number=None):
+            return {"account_number": "ABC123", "margin_balances": None}
+
+        @staticmethod
+        def load_portfolio_profile(account_number=None):
+            return {}
+
+    class FakeAccount:
+        @staticmethod
+        def load_phoenix_account():
+            return {}
+
+    class FakeRobinhood:
+        profiles = FakeProfiles()
+        account = FakeAccount()
+
+        @staticmethod
+        def request_get(url):
+            if url == "https://api.robinhood.com/margin/accounts/ABC123/":
+                return {"margin_debit": "654.32"}
+            return None
+
+    class FakeDb:
+        def __init__(self):
+            self.margin_balance = None
+
+        def set_margin_balance_usd(self, value):
+            self.margin_balance = value
+
+    fake_db = FakeDb()
+    service = RobinhoodSyncService(fake_db, market_service=None)
+
+    service._sync_margin_balance(FakeRobinhood(), account_number="default")
+
+    assert fake_db.margin_balance == 654.32

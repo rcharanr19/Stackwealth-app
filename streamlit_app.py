@@ -504,6 +504,8 @@ def sync_robinhood(
     email = str(email or "").strip()
     password = str(password or "").strip()
     account_number = str(account_number or "").strip() or None
+    if account_number and account_number.lower() == "default":
+        account_number = None
     mfa_code = str(mfa_code or "").strip()
 
     if not email or not password:
