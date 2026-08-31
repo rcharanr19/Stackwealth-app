@@ -14,7 +14,7 @@ import re
 import json
 
 from alphavault.cache_store import CacheStore
-from alphavault.finance_engine import build_metrics_table, compute_portfolio_since_start_metrics
+from alphavault.finance_engine import build_metrics_table, compute_portfolio_since_start_metrics, compute_xirr
 from alphavault.postgres_store import PostgresStore
 from alphavault.logging_utils import configure_logging
 from alphavault.market_data import MarketDataService
@@ -128,6 +128,53 @@ def _fmt_iso_ts(ts: str | None) -> str | None:
         return datetime.fromisoformat(str(ts)).strftime("%Y-%m-%d %H:%M:%S UTC")
     except Exception:
         return str(ts)
+
+
+def _transaction_rows_for_ticker(transactions: list[Any], ticker: str) -> pd.DataFrame:
+    rows = []
+    ticker_upper = str(ticker or "").upper().strip()
+    for tx in transactions:
+        if str(getattr(tx, "ticker", "")).upper().strip() != ticker_upper:
+            continue
+        rows.append(
+            {
+                "Date": getattr(tx, "tx_date", None),
+                "Side": str(getattr(tx, "side", "") or "").upper(),
+                "Shares": getattr(tx, "shares", None),
+                "Price": getattr(tx, "price", None),
+                "Amount": getattr(tx, "amount", None),
+                "Currency": getattr(tx, "currency", None) or "USD",
+                "Execution": getattr(tx, "execution_id", None),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _ticker_xirr(transactions: list[Any], ticker: str, terminal_value: float, start_date: date | None = None) -> float | None:
+    ticker_upper = str(ticker or "").upper().strip()
+    ticker_transactions = [
+        tx
+        for tx in transactions
+        if str(getattr(tx, "ticker", "")).upper().strip() == ticker_upper
+        and (start_date is None or getattr(tx, "tx_date", date.min) >= start_date)
+    ]
+    if not ticker_transactions:
+        return None
+    return compute_xirr(ticker_transactions, terminal_value)
+
+
+def _sort_portfolio_view(frame: pd.DataFrame, view_name: str, xirr_column: str) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    if view_name == "Largest Losses" and "open_pnl" in frame:
+        return frame.sort_values("open_pnl", ascending=True, na_position="last")
+    if view_name == "Highest XIRR" and xirr_column in frame:
+        return frame.sort_values(xirr_column, ascending=False, na_position="last")
+    if view_name == "Lowest XIRR" and xirr_column in frame:
+        return frame.sort_values(xirr_column, ascending=True, na_position="last")
+    if view_name == "Highest Allocation" and "weight_pct" in frame:
+        return frame.sort_values("weight_pct", ascending=False, na_position="last")
+    return frame.sort_values("current_value", ascending=False, na_position="last") if "current_value" in frame else frame
 
 
 def _hash_portfolio_snapshot(payload: dict[str, Any]) -> str:
@@ -616,6 +663,7 @@ def main() -> None:
     try:
         # Use compute_dashboard to get the FX-normalized metrics (USD-aware)
         metrics, since_start, profile = compute_dashboard(db, market_service)
+        _positions_for_detail, transactions_for_detail = db.load_portfolio_state()
         portfolio_summary = metrics if not metrics.empty else metrics
         # Derive display columns expected by the UI using USD-normalized fields
         if not portfolio_summary.empty:
@@ -646,6 +694,33 @@ def main() -> None:
             portfolio_summary["market_cap_tier"] = portfolio_summary.get("market_cap").apply(_market_cap_tier)
             # Express XIRR as percentage for table display
             portfolio_summary["xirr_pct"] = (portfolio_summary["xirr"] * 100.0).where(portfolio_summary["xirr"].notna())
+            baseline_date_for_returns = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
+            portfolio_summary["open_xirr_pct"] = portfolio_summary["xirr_pct"]
+            portfolio_summary["lifetime_xirr_pct"] = portfolio_summary.apply(
+                lambda row: (
+                    lambda value: value * 100.0 if value is not None else None
+                )(
+                    _ticker_xirr(
+                        transactions_for_detail,
+                        str(row.get("ticker")),
+                        float(row.get("equity_native") or 0.0),
+                    )
+                ),
+                axis=1,
+            )
+            portfolio_summary["baseline_xirr_pct"] = portfolio_summary.apply(
+                lambda row: (
+                    lambda value: value * 100.0 if value is not None else None
+                )(
+                    _ticker_xirr(
+                        transactions_for_detail,
+                        str(row.get("ticker")),
+                        float(row.get("equity_native") or 0.0),
+                        start_date=baseline_date_for_returns,
+                    )
+                ),
+                axis=1,
+            )
     except Exception as exc:
         st.error(f"Unable to load holdings and market data: {exc}")
         st.stop()
@@ -702,23 +777,116 @@ def main() -> None:
             margin_updated = _fmt_iso_ts(profile.get("margin_updated_at")) or "not synced"
             st.caption(f"Gross holdings: ${total_value:,.2f} | Total P&L: ${total_open_pnl:,.2f} | Margin synced: {margin_updated}")
 
-            display = portfolio_summary[
-                [
-                    "ticker",
-                    "company_name",
-                    "shares",
-                    "avg_cost",
-                    "current_price",
-                    "last_day_change_pct",
-                    "cost_basis",
-                    "current_value",
-                    "unrealized_pnl_pct",
-                    "total_pnl_pct",
-                    "xirr_pct",
-                    "open_pnl",
-                    "weight_pct",
+            with st.expander("Portfolio Diagnostics", expanded=False):
+                top_holding = float(portfolio_summary["weight_pct"].max(skipna=True)) if "weight_pct" in portfolio_summary else 0.0
+                top_five = float(portfolio_summary["weight_pct"].nlargest(5).sum(skipna=True)) if "weight_pct" in portfolio_summary else 0.0
+                margin_utilization = (margin_balance / total_value * 100.0) if total_value > 0 else 0.0
+                stale_count = int(portfolio_summary.get("is_stale", pd.Series(dtype=bool)).fillna(False).sum())
+                d1, d2, d3, d4 = st.columns(4)
+                d1.metric("Top Holding Weight", f"{top_holding:.2f}%")
+                d2.metric("Top 5 Weight", f"{top_five:.2f}%")
+                d3.metric("Margin Utilization", f"{margin_utilization:.2f}%")
+                d4.metric("Stale Quotes", str(stale_count))
+                st.json(
+                    {
+                        "initialized": bool(profile.get("initialized", False)),
+                        "baseline_assets": len(profile.get("baseline_assets") or []),
+                        "tracked_assets": len(profile.get("tracked_tickers") or []),
+                        "baseline_date": profile.get("baseline_date"),
+                        "last_sync_at": profile.get("last_sync_at"),
+                        "margin_updated_at": profile.get("margin_updated_at"),
+                    }
+                )
+
+            controls = st.container(border=True)
+            with controls:
+                c1, c2, c3, c4 = st.columns([1.3, 1.1, 1.3, 1.2])
+                return_mode = c1.radio(
+                    "Return Mode",
+                    ["Open Position", "Lifetime Ticker", "Since Baseline"],
+                    horizontal=True,
+                    key="portfolio_return_mode",
+                )
+                saved_view = c2.selectbox(
+                    "View",
+                    ["All Holdings", "Largest Losses", "Highest XIRR", "Lowest XIRR", "Highest Allocation", "Stale Quotes"],
+                    key="portfolio_saved_view",
+                )
+                search_text = c3.text_input("Search", key="portfolio_search", placeholder="Ticker or company")
+                tier_options = sorted(portfolio_summary["market_cap_tier"].dropna().unique().tolist()) if "market_cap_tier" in portfolio_summary else []
+                selected_tiers = c4.multiselect("Market Cap", tier_options, default=tier_options, key="portfolio_market_cap_filter")
+
+            xirr_column_by_mode = {
+                "Open Position": "open_xirr_pct",
+                "Lifetime Ticker": "lifetime_xirr_pct",
+                "Since Baseline": "baseline_xirr_pct",
+            }
+            selected_xirr_column = xirr_column_by_mode[return_mode]
+            view_summary = portfolio_summary.copy()
+            view_summary["xirr_display_pct"] = view_summary[selected_xirr_column]
+            if search_text.strip():
+                query = search_text.strip().lower()
+                view_summary = view_summary[
+                    view_summary["ticker"].astype(str).str.lower().str.contains(query, na=False)
+                    | view_summary["company_name"].astype(str).str.lower().str.contains(query, na=False)
                 ]
-            ].rename(
+            if selected_tiers and "market_cap_tier" in view_summary:
+                view_summary = view_summary[view_summary["market_cap_tier"].isin(selected_tiers)]
+            if saved_view == "Stale Quotes" and "is_stale" in view_summary:
+                view_summary = view_summary[view_summary["is_stale"].fillna(False)]
+            else:
+                view_summary = _sort_portfolio_view(view_summary, saved_view, "xirr_display_pct")
+
+            if view_summary.empty:
+                st.info("No holdings match the current filters.")
+            else:
+                chart_cols = st.columns(2)
+                chart_cols[0].bar_chart(view_summary.set_index("ticker")["current_value"], height=260)
+                chart_cols[1].bar_chart(view_summary.set_index("ticker")["open_pnl"], height=260)
+
+            default_columns = [
+                "ticker",
+                "company_name",
+                "shares",
+                "avg_cost",
+                "current_price",
+                "last_day_change_pct",
+                "cost_basis",
+                "current_value",
+                "unrealized_pnl_pct",
+                "total_pnl_pct",
+                "xirr_display_pct",
+                "open_pnl",
+                "weight_pct",
+            ]
+            available_columns = [column for column in default_columns + ["market_cap_tier"] if column in view_summary.columns]
+            selected_columns = st.multiselect(
+                "Columns",
+                available_columns,
+                default=available_columns,
+                format_func=lambda column: {
+                    "ticker": "Ticker",
+                    "company_name": "Company",
+                    "shares": "Shares",
+                    "avg_cost": "Avg Cost",
+                    "current_price": "Current Price",
+                    "last_day_change_pct": "Day Change %",
+                    "cost_basis": "Cost Basis",
+                    "current_value": "Current Value",
+                    "unrealized_pnl_pct": "Unrealized P&L %",
+                    "total_pnl_pct": "Total P&L %",
+                    "xirr_display_pct": f"XIRR % ({return_mode})",
+                    "open_pnl": "Total P&L",
+                    "weight_pct": "Weight %",
+                    "market_cap_tier": "Market Cap Tier",
+                }.get(column, column),
+                key="portfolio_columns",
+            )
+            if not selected_columns:
+                st.warning("Choose at least one column to display.")
+                selected_columns = ["ticker", "company_name"]
+
+            display = view_summary[selected_columns].rename(
                 columns={
                     "ticker": "Ticker",
                     "company_name": "Company",
@@ -730,9 +898,10 @@ def main() -> None:
                     "current_value": "Current Value",
                     "unrealized_pnl_pct": "Unrealized P&L %",
                     "total_pnl_pct": "Total P&L %",
-                    "xirr_pct": "XIRR %",
+                    "xirr_display_pct": f"XIRR % ({return_mode})",
                     "open_pnl": "Total P&L",
                     "weight_pct": "Weight %",
+                    "market_cap_tier": "Market Cap Tier",
                 }
             )
 
@@ -746,14 +915,33 @@ def main() -> None:
                     "Current Value": _fmt_currency_2,
                     "Unrealized P&L %": "{:+.2f}%",
                     "Total P&L %": "{:+.2f}%",
-                    "XIRR %": lambda v: f"{float(v):+.2f}%" if pd.notna(v) else "N/A",
+                    f"XIRR % ({return_mode})": lambda v: f"{float(v):+.2f}%" if pd.notna(v) else "N/A",
                     "Total P&L": _fmt_currency_2,
                     "Weight %": "{:.2f}%",
                 }
             )
 
-            styled = styler.map(style_signed_value, subset=["Total P&L", "Unrealized P&L %", "Total P&L %", "XIRR %", "Day Change %"])
+            signed_columns = [column for column in ["Total P&L", "Unrealized P&L %", "Total P&L %", f"XIRR % ({return_mode})", "Day Change %"] if column in display.columns]
+            styled = styler.map(style_signed_value, subset=signed_columns)
             st.dataframe(styled, width="stretch")
+
+            if not view_summary.empty:
+                selected_detail_ticker = st.selectbox("Ticker Detail", view_summary["ticker"].tolist(), key="portfolio_detail_ticker")
+                detail_row = view_summary[view_summary["ticker"] == selected_detail_ticker].iloc[0]
+                detail_cols = st.columns(5)
+                detail_cols[0].metric("Shares", f"{float(detail_row.get('shares') or 0.0):,.4f}")
+                detail_cols[1].metric("Current Value", _fmt_currency_2(detail_row.get("current_value")))
+                detail_cols[2].metric("Total P&L", _fmt_currency_2(detail_row.get("open_pnl")))
+                detail_cols[3].metric("Weight", f"{float(detail_row.get('weight_pct') or 0.0):.2f}%")
+                detail_cols[4].metric("XIRR", "N/A" if pd.isna(detail_row.get("xirr_display_pct")) else f"{float(detail_row.get('xirr_display_pct')):+.2f}%")
+                tx_display = _transaction_rows_for_ticker(transactions_for_detail, selected_detail_ticker)
+                if tx_display.empty:
+                    st.info("No transactions found for the selected ticker.")
+                else:
+                    st.dataframe(
+                        tx_display.style.format({"Shares": "{:.4f}", "Price": _fmt_currency_2, "Amount": _fmt_currency_2}),
+                        width="stretch",
+                    )
 
             if st.button("Run AI Overview", key="run_ai_overview", width="stretch"):
                 try:
