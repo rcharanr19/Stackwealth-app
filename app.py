@@ -16,7 +16,7 @@ import customtkinter as ctk
 import numpy as np
 
 from alphavault.cache_store import CacheStore
-from alphavault.finance_engine import build_metrics_table, compute_portfolio_since_start_metrics
+from alphavault.finance_engine import build_metrics_table, compute_portfolio_since_start_metrics, exclude_seed_transactions_with_real_history
 from alphavault.logging_utils import configure_logging, is_debug_enabled, mask_account, mask_email, set_debug_logging
 from alphavault.market_data import MarketDataService
 from alphavault.models import Position, Snapshot, Transaction
@@ -1071,16 +1071,17 @@ class StackWealthApp(ctk.CTk):
 
         baseline_date = date.fromisoformat(str(profile.get("baseline_date"))) if profile else date.today()
         tracked_tickers = set(profile.get("tracked_tickers", [])) if profile else set()
+        transactions = exclude_seed_transactions_with_real_history(self.transactions)
         tx_since_start = [
             tx
-            for tx in self.transactions
+            for tx in transactions
             if tx.tx_date >= baseline_date and (not tracked_tickers or tx.ticker in tracked_tickers)
         ]
 
         snapshot = self.market_service.refresh_snapshot(tickers=tickers, currencies=currencies)
         metrics = build_metrics_table(
             positions=self.positions,
-            transactions=self.transactions,
+            transactions=transactions,
             quotes=snapshot.quotes,
             fx_to_usd=snapshot.fx_to_usd,
             stale_tickers=snapshot.stale_tickers,

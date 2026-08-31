@@ -14,7 +14,12 @@ import re
 import json
 
 from alphavault.cache_store import CacheStore
-from alphavault.finance_engine import build_metrics_table, compute_portfolio_since_start_metrics, compute_xirr
+from alphavault.finance_engine import (
+    build_metrics_table,
+    compute_portfolio_since_start_metrics,
+    compute_xirr,
+    exclude_seed_transactions_with_real_history,
+)
 from alphavault.postgres_store import PostgresStore
 from alphavault.logging_utils import configure_logging
 from alphavault.market_data import MarketDataService
@@ -175,6 +180,82 @@ def _sort_portfolio_view(frame: pd.DataFrame, view_name: str, xirr_column: str) 
     if view_name == "Highest Allocation" and "weight_pct" in frame:
         return frame.sort_values("weight_pct", ascending=False, na_position="last")
     return frame.sort_values("current_value", ascending=False, na_position="last") if "current_value" in frame else frame
+
+
+def _history_sample_dates(start_date: date, max_points: int = 48) -> list[date]:
+    today = date.today()
+    if start_date >= today:
+        return [today]
+    dates = [d.date() for d in pd.date_range(start=start_date, end=today, periods=max_points)]
+    dates.append(today)
+    return sorted(set(dates))
+
+
+def _shares_as_of_from_current(transactions: list[Any], ticker: str, current_shares: float, as_of: date) -> float:
+    shares = float(current_shares or 0.0)
+    ticker_upper = str(ticker or "").upper().strip()
+    for tx in transactions:
+        if str(getattr(tx, "ticker", "")).upper().strip() != ticker_upper:
+            continue
+        tx_date = getattr(tx, "tx_date", None)
+        qty = float(getattr(tx, "shares", None) or 0.0)
+        if not tx_date or qty <= 0 or tx_date <= as_of:
+            continue
+        side = str(getattr(tx, "side", "") or "").lower().strip()
+        if side == "buy":
+            shares -= qty
+        elif side == "sell":
+            shares += qty
+    return max(shares, 0.0)
+
+
+def _portfolio_value_history(
+    portfolio_summary: pd.DataFrame,
+    transactions: list[Any],
+    market_service: MarketDataService,
+    baseline_date: date,
+    margin_balance: float,
+) -> pd.DataFrame:
+    if portfolio_summary.empty:
+        return pd.DataFrame(columns=["Date", "Gross Holdings", "Net Portfolio Value"])
+
+    tickers = [str(ticker).upper().strip() for ticker in portfolio_summary["ticker"].dropna().tolist()]
+    sample_dates = _history_sample_dates(baseline_date)
+    historical_dates = [sample_date for sample_date in sample_dates if sample_date < date.today()]
+    cutoff_prices = market_service.fetch_cutoff_prices(tickers, historical_dates) if historical_dates else {}
+
+    rows = []
+    for sample_date in sample_dates:
+        gross_value = 0.0
+        for _, row in portfolio_summary.iterrows():
+            ticker = str(row.get("ticker") or "").upper().strip()
+            if not ticker:
+                continue
+            current_shares = float(row.get("shares") or 0.0)
+            shares = _shares_as_of_from_current(transactions, ticker, current_shares, sample_date)
+            if shares <= 0:
+                continue
+
+            if sample_date >= date.today():
+                price = _safe_float(row.get("current_price"))
+            else:
+                price = cutoff_prices.get(ticker, {}).get(sample_date)
+
+            current_price = _safe_float(row.get("current_price"))
+            current_price_usd = _safe_float(row.get("current_price_usd")) or current_price
+            fx_rate = (current_price_usd / current_price) if current_price and current_price_usd else 1.0
+            if price is not None:
+                gross_value += shares * float(price) * float(fx_rate or 1.0)
+
+        rows.append(
+            {
+                "Date": sample_date,
+                "Gross Holdings": gross_value,
+                "Net Portfolio Value": gross_value - float(margin_balance or 0.0),
+            }
+        )
+
+    return pd.DataFrame(rows)
 
 
 def _hash_portfolio_snapshot(payload: dict[str, Any]) -> str:
@@ -487,6 +568,7 @@ def get_services() -> tuple[PostgresStore, MarketDataService, RobinhoodSyncServi
 def compute_dashboard(db: PostgresStore, market_service: MarketDataService) -> tuple[pd.DataFrame, dict[str, object], dict[str, object]]:
     profile = db.get_sync_profile() or db.bootstrap_sync_profile_from_portfolio_json(PORTFOLIO_JSON)
     positions, transactions = db.load_portfolio_state()
+    transactions = exclude_seed_transactions_with_real_history(transactions)
     baseline_date = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
     tracked_assets = set(profile.get("tracked_tickers") or profile.get("baseline_assets") or [])
     tx_since_start = [
@@ -664,6 +746,7 @@ def main() -> None:
         # Use compute_dashboard to get the FX-normalized metrics (USD-aware)
         metrics, since_start, profile = compute_dashboard(db, market_service)
         _positions_for_detail, transactions_for_detail = db.load_portfolio_state()
+        transactions_for_detail = exclude_seed_transactions_with_real_history(transactions_for_detail)
         portfolio_summary = metrics if not metrics.empty else metrics
         # Derive display columns expected by the UI using USD-normalized fields
         if not portfolio_summary.empty:
@@ -776,6 +859,18 @@ def main() -> None:
             kpi4.metric("Day Change %", f"{day_change_pct:+.2f}%")
             margin_updated = _fmt_iso_ts(profile.get("margin_updated_at")) or "not synced"
             st.caption(f"Gross holdings: ${total_value:,.2f} | Total P&L: ${total_open_pnl:,.2f} | Margin synced: {margin_updated}")
+
+            baseline_date_for_chart = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
+            value_history = _portfolio_value_history(
+                portfolio_summary,
+                transactions_for_detail,
+                market_service,
+                baseline_date_for_chart,
+                margin_balance,
+            )
+            if len(value_history) > 1:
+                st.subheader("Portfolio Value Over Time")
+                st.line_chart(value_history.set_index("Date"), height=320)
 
             with st.expander("Portfolio Diagnostics", expanded=False):
                 top_holding = float(portfolio_summary["weight_pct"].max(skipna=True)) if "weight_pct" in portfolio_summary else 0.0

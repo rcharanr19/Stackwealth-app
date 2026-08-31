@@ -127,6 +127,17 @@ def _sort_transaction_key(tx: Transaction) -> tuple:
     )
 
 
+def is_seed_transaction(tx: Transaction) -> bool:
+    return str(tx.execution_id or "").startswith("seed-")
+
+
+def exclude_seed_transactions_with_real_history(transactions: list[Transaction]) -> list[Transaction]:
+    real_history_tickers = {tx.ticker for tx in transactions if not is_seed_transaction(tx)}
+    if not real_history_tickers:
+        return list(transactions)
+    return [tx for tx in transactions if not (is_seed_transaction(tx) and tx.ticker in real_history_tickers)]
+
+
 def _normalised_side(tx: Transaction) -> str:
     if tx.side:
         return tx.side.lower().strip()
@@ -263,6 +274,7 @@ def build_metrics_table(
     stale_tickers: set[str] | None = None,
     baseline_date: date | None = None,
 ) -> pd.DataFrame:
+    transactions = exclude_seed_transactions_with_real_history(transactions)
     LOGGER.debug("Building metrics table for %d positions and %d transactions", len(positions), len(transactions))
     rows: list[dict[str, float | str | None]] = []
     tx_by_ticker: dict[str, list[Transaction]] = {}
@@ -379,6 +391,7 @@ def compute_portfolio_xirr(
     fx_to_usd: dict[str, float],
 ) -> float | None:
     """Compute blended portfolio XIRR with all cash flows normalized to USD."""
+    transactions = exclude_seed_transactions_with_real_history(transactions)
     LOGGER.debug("Computing blended portfolio XIRR for %d transactions and %d positions", len(transactions), len(positions))
     currency_by_ticker: dict[str, str] = {p.ticker: p.currency for p in positions}
 
@@ -417,6 +430,7 @@ def compute_portfolio_window_metrics(
     windows: Iterable[int] = (1, 2, 3, 5, 10),
 ) -> dict[str, dict[str, float | None]]:
     """Compute lookback performance windows from the current ledger and snapshot."""
+    transactions = exclude_seed_transactions_with_real_history(transactions)
     currency_by_ticker: dict[str, str] = {p.ticker: p.currency for p in positions}
     tx_by_ticker: dict[str, list[Transaction]] = {}
     for tx in transactions:
@@ -496,6 +510,7 @@ def compute_portfolio_since_start_metrics(
     The change metric is a simple total return percentage:
     (ending value - baseline value) / baseline value.
     """
+    transactions = exclude_seed_transactions_with_real_history(transactions)
     LOGGER.debug(
         "Computing since-start portfolio metrics for %d positions and %d transactions (baseline=%s, baseline_value_usd=%.2f)",
         len(positions),
