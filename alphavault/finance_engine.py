@@ -39,28 +39,49 @@ def _xirr_fallback(cashflows: list[tuple[date, float]]) -> float | None:
         LOGGER.debug("XIRR fallback skipped because cashflows do not contain both positive and negative values")
         return None
 
-    low, high = -0.99, 1.0
-    f_low = _xnpv(low, cashflows)
-    f_high = _xnpv(high, cashflows)
+    rates = sorted(
+        set(
+            [float(rate) for rate in np.linspace(-0.99, -0.01, 99)]
+            + [0.0]
+            + [float(rate) for rate in np.geomspace(0.0001, 1_000_000.0, 140)]
+        )
+    )
+    values = [(rate, _xnpv(rate, cashflows)) for rate in rates]
+    roots: list[float] = []
 
-    while np.sign(f_low) == np.sign(f_high) and high < 1_000_000.0:
-        high *= 2.0
-        f_high = _xnpv(high, cashflows)
+    for (low, f_low), (high, f_high) in zip(values, values[1:]):
+        if abs(f_low) < 1e-7:
+            roots.append(low)
+            continue
+        if np.sign(f_low) == np.sign(f_high):
+            continue
 
-    if np.sign(f_low) == np.sign(f_high):
+        for _ in range(80):
+            mid = (low + high) / 2.0
+            f_mid = _xnpv(mid, cashflows)
+            if abs(f_mid) < 1e-7:
+                low = high = mid
+                break
+            if np.sign(f_mid) == np.sign(f_low):
+                low, f_low = mid, f_mid
+            else:
+                high, f_high = mid, f_mid
+        roots.append((low + high) / 2.0)
+
+    if not roots:
         LOGGER.debug("XIRR fallback could not bracket a solution")
         return None
 
-    for _ in range(80):
-        mid = (low + high) / 2.0
-        f_mid = _xnpv(mid, cashflows)
-        if abs(f_mid) < 1e-7:
-            return mid
-        if np.sign(f_mid) == np.sign(f_low):
-            low, f_low = mid, f_mid
-        else:
-            high, f_high = mid, f_mid
-    return (low + high) / 2.0
+    net_cash_result = sum(amounts)
+    if net_cash_result > 0:
+        matching_roots = [root for root in roots if root >= 0]
+    elif net_cash_result < 0:
+        matching_roots = [root for root in roots if root <= 0]
+    else:
+        matching_roots = []
+
+    candidates = matching_roots or roots
+    return min(candidates, key=lambda root: abs(root - 0.1))
 
 
 def compute_xirr(transactions: Iterable[Transaction], terminal_value: float) -> float | None:

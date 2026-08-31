@@ -108,6 +108,24 @@ def test_short_holding_period_defaults_to_absolute_return():
     assert pytest.approx(xirr, abs=1e-4) == 0.20
 
 
+def test_xirr_prefers_positive_root_when_net_return_is_positive():
+    today = date.today()
+    txs = [
+        Transaction(ticker="MROOT", tx_date=today - timedelta(days=3045), amount=-16412.61),
+        Transaction(ticker="MROOT", tx_date=today - timedelta(days=2851), amount=2581.49),
+        Transaction(ticker="MROOT", tx_date=today - timedelta(days=1623), amount=8824.38),
+        Transaction(ticker="MROOT", tx_date=today - timedelta(days=1145), amount=15794.18),
+        Transaction(ticker="MROOT", tx_date=today - timedelta(days=1052), amount=2356.39),
+        Transaction(ticker="MROOT", tx_date=today - timedelta(days=430), amount=-14840.80),
+    ]
+
+    xirr = compute_xirr(txs, terminal_value=1853.03)
+
+    assert xirr is not None
+    assert xirr > 0.0
+    assert pytest.approx(xirr, abs=0.001) == 0.0039
+
+
 def test_dashboard_stock_xirr_uses_full_robinhood_history_for_untracked_assets():
     one_year_ago = date.today() - timedelta(days=365)
     hood_position = Position(ticker="HOOD", company_name="Robinhood", shares=4.0, avg_price=10.0, currency="USD")
