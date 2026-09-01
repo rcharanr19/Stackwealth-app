@@ -861,15 +861,21 @@ def main() -> None:
                 ⚠️ **Margin balance not synced or is $0**
                 
                 **This could mean:**
+                - **SSL/TLS Connection Issue** (Streamlit Cloud) - Robinhood API blocked due to certificate handshake failure
                 - First time syncing (margin fetches after login)
-                - Robinhood API endpoints are unavailable
                 - No margin is in use (account is cash-only)
                 
-                **To debug:**
-                1. Run the debug script: `python scripts/debug_margin_sync.py`
-                2. Enable debug logging: `set STACKWEALTH_DEBUG=1` (Windows)
-                3. Run: `streamlit run streamlit_app.py`
-                4. Check terminal output for margin API responses
+                **Streamlit Cloud Note:**
+                Streamlit Cloud may have SSL certificate issues with Robinhood's Phoenix API. The app will:
+                1. Try Account Profile (most reliable) ✓
+                2. Try Portfolio Profile ✓
+                3. Skip Phoenix Account (may fail on SSL) ⏭️
+                4. Try direct margin balance endpoints
+                
+                **To check if sync worked:**
+                - Margin data may come from Account or Portfolio profiles
+                - Check app logs for: "Updated Robinhood margin balance:"
+                - If you see "Robinhood margin balance was unavailable" → no margin data found
                 """)
             
             # Show raw profile values
@@ -1068,9 +1074,8 @@ def main() -> None:
                     ["All Holdings", "Largest Losses", "Highest XIRR", "Lowest XIRR", "Highest Allocation", "Stale Quotes"],
                     key="portfolio_saved_view",
                 )
-                search_text = c3.text_input("Search", key="portfolio_search", placeholder="Ticker or company")
-                tier_options = sorted(portfolio_summary["market_cap_tier"].dropna().unique().tolist()) if "market_cap_tier" in portfolio_summary else []
-                selected_tiers = c4.multiselect("Market Cap", tier_options, default=tier_options, key="portfolio_market_cap_filter")
+                search_text = ""
+                selected_tiers = []
 
             xirr_column_by_mode = {
                 "Open Position": "open_xirr_pct",
@@ -1095,10 +1100,6 @@ def main() -> None:
 
             if view_summary.empty:
                 st.info("No holdings match the current filters.")
-            else:
-                chart_cols = st.columns(2)
-                chart_cols[0].bar_chart(view_summary.set_index("ticker")["current_value"], height=260)
-                chart_cols[1].bar_chart(view_summary.set_index("ticker")["open_pnl"], height=260)
 
             default_columns = [
                 "ticker",
@@ -1116,31 +1117,7 @@ def main() -> None:
                 "weight_pct",
             ]
             available_columns = [column for column in default_columns + ["market_cap_tier"] if column in view_summary.columns]
-            selected_columns = st.multiselect(
-                "Columns",
-                available_columns,
-                default=available_columns,
-                format_func=lambda column: {
-                    "ticker": "Ticker",
-                    "company_name": "Company",
-                    "shares": "Shares",
-                    "avg_cost": "Avg Cost",
-                    "current_price": "Current Price",
-                    "last_day_change_pct": "Day Change %",
-                    "cost_basis": "Cost Basis",
-                    "current_value": "Current Value",
-                    "unrealized_pnl_pct": "Unrealized P&L %",
-                    "total_pnl_pct": "Total P&L %",
-                    "xirr_display_pct": f"XIRR % ({return_mode})",
-                    "open_pnl": "Total P&L",
-                    "weight_pct": "Weight %",
-                    "market_cap_tier": "Market Cap Tier",
-                }.get(column, column),
-                key="portfolio_columns",
-            )
-            if not selected_columns:
-                st.warning("Choose at least one column to display.")
-                selected_columns = ["ticker", "company_name"]
+            selected_columns = available_columns
 
             display = view_summary[selected_columns].rename(
                 columns={

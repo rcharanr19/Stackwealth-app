@@ -240,37 +240,38 @@ class RobinhoodSyncService:
             account_number = self._normalize_account_number(account_number)
             LOGGER.info("Fetching Robinhood margin details for account=%s.", mask_account(account_number))
             
-            # Attempt 1: Account profile
             account_profile = None
+            portfolio_profile = None
+            phoenix_account = None
+            margin_balances = None
+            
+            # Attempt 1: Account profile (most reliable)
             try:
                 account_profile = robinhood_module.profiles.load_account_profile(account_number=account_number)
                 LOGGER.debug("Account profile retrieved: keys=%s", self._payload_keys(account_profile))
             except Exception as e:
-                LOGGER.debug("Failed to load account profile: %s", e)
+                LOGGER.debug("Failed to load account profile: %s", type(e).__name__)
             
             # Attempt 2: Portfolio profile
-            portfolio_profile = None
             try:
                 portfolio_profile = robinhood_module.profiles.load_portfolio_profile(account_number=account_number)
                 LOGGER.debug("Portfolio profile retrieved: keys=%s", self._payload_keys(portfolio_profile))
             except Exception as e:
-                LOGGER.debug("Failed to load portfolio profile: %s", e)
+                LOGGER.debug("Failed to load portfolio profile: %s", type(e).__name__)
             
-            # Attempt 3: Phoenix account
-            phoenix_account = None
+            # Attempt 3: Phoenix account (may fail on SSL in cloud environments)
             try:
                 phoenix_account = robinhood_module.account.load_phoenix_account()
                 LOGGER.debug("Phoenix account retrieved: keys=%s", self._payload_keys(phoenix_account))
             except Exception as e:
-                LOGGER.debug("Failed to load phoenix account: %s", e)
+                LOGGER.debug("Failed to load phoenix account (this is OK in cloud): %s", type(e).__name__)
             
             # Attempt 4: Linked margin balances
-            margin_balances = None
             try:
                 margin_balances = self._load_linked_margin_balances(robinhood_module, account_profile)
                 LOGGER.debug("Linked margin balances retrieved: keys=%s", self._payload_keys(margin_balances))
             except Exception as e:
-                LOGGER.debug("Failed to load linked margin balances: %s", e)
+                LOGGER.debug("Failed to load linked margin balances: %s", type(e).__name__)
             
             # Attempt 5: Direct margin balances if linked failed
             if margin_balances is None:
@@ -278,7 +279,7 @@ class RobinhoodSyncService:
                     margin_balances = self._load_direct_margin_balances(robinhood_module, account_number, account_profile)
                     LOGGER.debug("Direct margin balances retrieved: keys=%s", self._payload_keys(margin_balances))
                 except Exception as e:
-                    LOGGER.debug("Failed to load direct margin balances: %s", e)
+                    LOGGER.debug("Failed to load direct margin balances: %s", type(e).__name__)
             
             LOGGER.info(
                 "Robinhood margin response keys: account=%s portfolio=%s phoenix=%s margin=%s.",

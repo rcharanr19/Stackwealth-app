@@ -330,13 +330,9 @@ def build_metrics_table(
         current_price_usd = price * fx_rate if np.isfinite(price) and np.isfinite(fx_rate) else np.nan
 
         terminal_value_native = equity_native if current_shares > 0 else 0.0
-        effective_transactions = (
-            _open_lot_transactions(ticker_transactions, current_shares, avg_price, pos.currency, baseline_date, pos.ticker)
-            if current_shares > 0
-            else ticker_transactions
-        )
-
-        xirr = compute_xirr(effective_transactions, float(terminal_value_native) if np.isfinite(terminal_value_native) else 0.0)
+        # Use actual transaction history for XIRR, not reconstructed open lots
+        # This ensures XIRR reflects true historical cash flows and returns
+        xirr = compute_xirr(ticker_transactions, float(terminal_value_native) if np.isfinite(terminal_value_native) else 0.0)
 
         rows.append(
             {
