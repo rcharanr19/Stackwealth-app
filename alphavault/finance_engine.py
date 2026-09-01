@@ -85,37 +85,41 @@ def _xirr_fallback(cashflows: list[tuple[date, float]]) -> float | None:
 
 
 def compute_xirr(transactions: Iterable[Transaction], terminal_value: float) -> float | None:
-    flows = [(t.tx_date, float(t.amount)) for t in transactions]
-    flows.append((date.today(), float(terminal_value)))
-    flows.sort(key=lambda x: x[0])
+    try:
+        flows = [(t.tx_date, float(t.amount)) for t in transactions]
+        flows.append((date.today(), float(terminal_value)))
+        flows.sort(key=lambda x: x[0])
 
-    LOGGER.debug("Computing XIRR for %d cashflows with terminal value %.2f", len(flows), float(terminal_value))
+        LOGGER.debug("Computing XIRR for %d cashflows with terminal value %.2f", len(flows), float(terminal_value))
 
-    amounts = [a for _, a in flows]
-    if not (any(a > 0 for a in amounts) and any(a < 0 for a in amounts)):
-        LOGGER.debug("XIRR skipped because the cashflow set does not have both inflows and outflows")
+        amounts = [a for _, a in flows]
+        if not (any(a > 0 for a in amounts) and any(a < 0 for a in amounts)):
+            LOGGER.debug("XIRR skipped because the cashflow set does not have both inflows and outflows")
+            return None
+
+        start_date = flows[0][0]
+        end_date = flows[-1][0]
+        holding_days = (end_date - start_date).days
+
+        if holding_days < 365:
+            total_invested = sum(-amt for _, amt in flows if amt < 0)
+            total_returned = sum(amt for _, amt in flows if amt > 0)
+            if total_invested > 0:
+                abs_return = (total_returned - total_invested) / total_invested
+                LOGGER.debug(
+                    "Holding period %d days < 365 days; returning absolute return %.4f",
+                    holding_days,
+                    abs_return,
+                )
+                return abs_return
+            return None
+
+        result = _xirr_fallback(flows)
+        LOGGER.debug("XIRR computation result: %s", result)
+        return result
+    except Exception as e:
+        LOGGER.warning("XIRR calculation failed: %s; returning None", e)
         return None
-
-    start_date = flows[0][0]
-    end_date = flows[-1][0]
-    holding_days = (end_date - start_date).days
-
-    if holding_days < 365:
-        total_invested = sum(-amt for _, amt in flows if amt < 0)
-        total_returned = sum(amt for _, amt in flows if amt > 0)
-        if total_invested > 0:
-            abs_return = (total_returned - total_invested) / total_invested
-            LOGGER.debug(
-                "Holding period %d days < 365 days; returning absolute return %.4f",
-                holding_days,
-                abs_return,
-            )
-            return abs_return
-        return None
-
-    result = _xirr_fallback(flows)
-    LOGGER.debug("XIRR computation result: %s", result)
-    return result
 
 
 def _sort_transaction_key(tx: Transaction) -> tuple:
@@ -338,7 +342,16 @@ def build_metrics_table(
         terminal_value_native = equity_native if current_shares > 0 else 0.0
         # Use actual transaction history for XIRR, not reconstructed open lots
         # This ensures XIRR reflects true historical cash flows and returns
-        xirr = compute_xirr(ticker_transactions, float(terminal_value_native) if np.isfinite(terminal_value_native) else 0.0)
+        # Only compute XIRR if we have a valid terminal value (current price data available)
+        # AND we have transaction history with valid amounts
+        has_valid_transactions = (
+            ticker_transactions and 
+            all(t.amount is not None for t in ticker_transactions)
+        )
+        if has_valid_transactions and np.isfinite(terminal_value_native) and terminal_value_native >= 0:
+            xirr = compute_xirr(ticker_transactions, float(terminal_value_native))
+        else:
+            xirr = None
 
         rows.append(
             {
