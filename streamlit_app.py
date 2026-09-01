@@ -718,10 +718,163 @@ def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title=APP_TITLE, page_icon="📈", layout="wide")
+    st.set_page_config(page_title=APP_TITLE, page_icon="📈", layout="wide", initial_sidebar_state="expanded")
+    
+    # Apply minimalist styling
+    st.markdown("""
+    <style>
+    /* Global styling for minimalist aesthetic */
+    * {
+        font-family: 'Segoe UI', 'Helvetica Neue', sans-serif;
+    }
+    
+    /* Main container styling */
+    .main {
+        background: #f8f9fa;
+    }
+    
+    /* Sidebar styling */
+    section[data-testid="stSidebar"] {
+        background: #ffffff;
+        border-right: 1px solid #e9ecef;
+    }
+    
+    /* Title and headers */
+    h1, h2, h3 {
+        font-weight: 600;
+        letter-spacing: -0.5px;
+        margin-bottom: 1.5rem;
+    }
+    
+    h1 {
+        font-size: 2.5rem;
+        color: #1a1a1a;
+    }
+    
+    h2 {
+        font-size: 1.8rem;
+        color: #2c3e50;
+    }
+    
+    h3 {
+        font-size: 1.2rem;
+        color: #34495e;
+    }
+    
+    /* Metric cards */
+    [data-testid="metric-container"] {
+        background: #ffffff;
+        padding: 1.2rem !important;
+        border-radius: 8px;
+        border: 1px solid #e9ecef;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Buttons styling */
+    button {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        border: none !important;
+        border-radius: 6px !important;
+        font-weight: 500 !important;
+        transition: all 0.3s ease !important;
+    }
+    
+    button:hover {
+        transform: translateY(-1px) !important;
+        box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4) !important;
+    }
+    
+    /* Tabs styling */
+    [data-testid="stTabs"] button {
+        font-weight: 500;
+        font-size: 0.95rem;
+    }
+    
+    /* Dataframe styling */
+    [data-testid="stDataFrame"] {
+        background: #ffffff;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Expander styling */
+    [data-testid="stExpander"] {
+        border: 1px solid #e9ecef;
+        border-radius: 6px;
+        background: #ffffff;
+    }
+    
+    /* Text input and select styling */
+    input, select {
+        border-radius: 6px !important;
+        border: 1px solid #ddd !important;
+    }
+    
+    /* Divider styling */
+    hr {
+        border: none;
+        border-top: 1px solid #e9ecef;
+        margin: 1.5rem 0 !important;
+    }
+    
+    /* Caption and small text */
+    .streamlit-caption {
+        color: #7f8c8d;
+        font-size: 0.9rem;
+    }
+    
+    /* Success, info, warning, error message styling */
+    .stSuccess {
+        background: #d4edda;
+        border: 1px solid #c3e6cb;
+        border-radius: 6px;
+    }
+    
+    .stInfo {
+        background: #d1ecf1;
+        border: 1px solid #bee5eb;
+        border-radius: 6px;
+    }
+    
+    .stWarning {
+        background: #fff3cd;
+        border: 1px solid #ffeeba;
+        border-radius: 6px;
+    }
+    
+    .stError {
+        background: #f8d7da;
+        border: 1px solid #f5c6cb;
+        border-radius: 6px;
+    }
+    
+    /* Chart styling */
+    [data-testid="stPlotlyChart"] {
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 1rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Line/bar chart styling */
+    [data-testid="stArrowVegaLiteChart"] {
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 1rem;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    }
+    
+    /* Sidebar dividers */
+    section[data-testid="stSidebar"] hr {
+        margin: 1rem 0 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
     require_login()
     st.title("StackWealth")
-    st.caption("Baseline-first Robinhood sync with durable first-run state.")
+    st.caption("📊 Baseline-first portfolio management with advanced analytics")
     
     # Initialize tax settings in session state
     if "tax_settings" not in st.session_state:
@@ -944,8 +1097,8 @@ def main() -> None:
                     _ticker_xirr(
                         transactions_for_detail,
                         str(row.get("ticker")),
-                        float(row.get("equity_native") or 0.0),
-                    )
+                        float(row.get("equity_native")) if pd.notna(row.get("equity_native")) else None,
+                    ) if pd.notna(row.get("equity_native")) else None
                 ),
                 axis=1,
             )
@@ -956,7 +1109,7 @@ def main() -> None:
                     _ticker_xirr(
                         transactions_for_detail,
                         str(row.get("ticker")),
-                        float(row.get("equity_native") or 0.0),
+                        float(row.get("equity_native")) if pd.notna(row.get("equity_native")) else None,
                         start_date=baseline_date_for_returns,
                     )
                 ),
