@@ -19,6 +19,21 @@ from tabs.tax_settings import (
 )
 
 
+def _numeric_series(frame: pd.DataFrame, column: str, default: float = 0.0) -> pd.Series:
+    if column not in frame:
+        return pd.Series(default, index=frame.index, dtype="float64")
+    return pd.to_numeric(frame[column], errors="coerce").fillna(default)
+
+
+def _numeric_value(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None or pd.isna(value):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def identify_tax_loss_harvesting_candidates(
     portfolio_summary: pd.DataFrame,
 ) -> pd.DataFrame:
@@ -32,7 +47,12 @@ def identify_tax_loss_harvesting_candidates(
         return pd.DataFrame()
     
     # Filter to positions with unrealized losses
-    losses = portfolio_summary[portfolio_summary["open_pnl"] < 0].copy()
+    summary = portfolio_summary.copy()
+    summary["open_pnl"] = _numeric_series(summary, "open_pnl")
+    summary["cost_basis"] = _numeric_series(summary, "cost_basis")
+    summary["current_value"] = _numeric_series(summary, "current_value")
+    summary["weight_pct"] = _numeric_series(summary, "weight_pct")
+    losses = summary[summary["open_pnl"] < 0].copy()
     
     if losses.empty:
         return pd.DataFrame()
@@ -79,8 +99,9 @@ def calculate_tax_impact(
         }
     
     # Separate gains and losses
-    gains = portfolio_summary[portfolio_summary["open_pnl"] > 0]["open_pnl"].sum()
-    losses = portfolio_summary[portfolio_summary["open_pnl"] < 0]["open_pnl"].sum()
+    open_pnl = _numeric_series(portfolio_summary, "open_pnl")
+    gains = open_pnl[open_pnl > 0].sum()
+    losses = open_pnl[open_pnl < 0].sum()
     
     gains = max(0, gains)
     losses_abs = abs(losses) if losses < 0 else 0
@@ -106,7 +127,7 @@ def calculate_tax_impact(
     # Tax benefit from harvesting losses
     tax_benefit_from_losses = losses_abs * (federal_rate + state_rate)
     
-    current_portfolio_value = portfolio_summary["current_value"].sum()
+    current_portfolio_value = _numeric_series(portfolio_summary, "current_value").sum()
     
     return {
         "total_unrealized_gain": float(gains),
@@ -145,9 +166,9 @@ def calculate_dividend_projections(
     rows = []
     for _, row in portfolio_summary.iterrows():
         ticker = str(row.get("ticker") or "").upper().strip()
-        shares = float(row.get("shares") or 0.0)
-        current_price = float(row.get("current_price") or 0.0)
-        current_value = float(row.get("current_value") or 0.0)
+        shares = _numeric_value(row.get("shares"))
+        current_price = _numeric_value(row.get("current_price"))
+        current_value = _numeric_value(row.get("current_value"))
         
         if not ticker or shares <= 0:
             continue
@@ -256,7 +277,7 @@ def benchmark_portfolio_returns(
             if tx_amount < 0:  # investments are negative
                 total_invested += abs(tx_amount)
         
-        total_current = portfolio_summary["current_value"].sum() if not portfolio_summary.empty else 0.0
+        total_current = _numeric_series(portfolio_summary, "current_value").sum() if not portfolio_summary.empty else 0.0
         total_cash = 0.0  # Assume no cash for simplicity
         
         if total_invested > 0:

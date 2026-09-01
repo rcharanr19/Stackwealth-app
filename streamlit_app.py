@@ -1867,10 +1867,12 @@ def main() -> None:
                 # Income growth strategy
                 st.subheader("Income Growth Strategy")
                 current_income = div_summary["total_annual_dividend"]
+                target_min = max(500, int(current_income // 500 * 500)) if current_income > 0 else 1000
+                target_max = max(target_min + 500, int(current_income * 2)) if current_income > 0 else 5000
                 target_income = st.slider(
                     "Target Annual Dividend Income",
-                    int(current_income) if current_income > 0 else 1000,
-                    int(current_income * 2) if current_income > 0 else 5000,
+                    target_min,
+                    target_max,
                     step=500,
                     key="dividend_target",
                 )

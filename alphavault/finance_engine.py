@@ -122,6 +122,45 @@ def compute_xirr(transactions: Iterable[Transaction], terminal_value: float) -> 
         return None
 
 
+def _current_open_lot_transactions(transactions: list[Transaction], current_shares: float) -> list[Transaction]:
+    remaining_shares = max(float(current_shares), 0.0)
+    if remaining_shares <= EPSILON:
+        return []
+
+    open_lots: list[Transaction] = []
+    sorted_transactions = sorted(transactions, key=_sort_transaction_key, reverse=True)
+    for tx in sorted_transactions:
+        side = str(tx.side or "").lower()
+        shares = float(tx.shares or 0.0)
+        price = float(tx.price or 0.0)
+        if side != "buy" or shares <= EPSILON or price <= 0:
+            continue
+
+        lot_shares = min(shares, remaining_shares)
+        if lot_shares <= EPSILON:
+            continue
+
+        amount = float(tx.amount) * (lot_shares / shares) if tx.amount is not None else -(lot_shares * price)
+        open_lots.append(
+            Transaction(
+                ticker=tx.ticker,
+                tx_date=tx.tx_date,
+                amount=-abs(amount),
+                side=tx.side,
+                shares=lot_shares,
+                price=price,
+                currency=tx.currency,
+                execution_id=tx.execution_id,
+                created_at=tx.created_at,
+            )
+        )
+        remaining_shares -= lot_shares
+        if remaining_shares <= EPSILON:
+            break
+
+    return sorted(open_lots, key=_sort_transaction_key)
+
+
 def _sort_transaction_key(tx: Transaction) -> tuple:
     return (
         tx.tx_date,
@@ -340,16 +379,13 @@ def build_metrics_table(
         current_price_usd = price * fx_rate if np.isfinite(price) and np.isfinite(fx_rate) else np.nan
 
         terminal_value_native = equity_native if current_shares > 0 else 0.0
-        # Use actual transaction history for XIRR, not reconstructed open lots
-        # This ensures XIRR reflects true historical cash flows and returns
-        # Only compute XIRR if we have a valid terminal value (current price data available)
-        # AND we have transaction history with valid amounts
+        open_lot_transactions = _current_open_lot_transactions(ticker_transactions, current_shares)
         has_valid_transactions = (
-            ticker_transactions and 
-            all(t.amount is not None for t in ticker_transactions)
+            open_lot_transactions and 
+            all(t.amount is not None for t in open_lot_transactions)
         )
         if has_valid_transactions and np.isfinite(terminal_value_native) and terminal_value_native >= 0:
-            xirr = compute_xirr(ticker_transactions, float(terminal_value_native))
+            xirr = compute_xirr(open_lot_transactions, float(terminal_value_native))
         else:
             xirr = None
 
