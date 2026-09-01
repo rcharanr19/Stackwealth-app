@@ -668,6 +668,36 @@ def sync_robinhood(
     return f"Imported {result.imported_count} transactions; new assets: {', '.join(result.new_tickers) if result.new_tickers else 'none'}"
 
 
+def save_manual_holding(
+    db: PostgresStore,
+    *,
+    ticker: str,
+    company_name: str,
+    shares: float,
+    avg_price: float,
+    currency: str,
+    purchase_date: date,
+) -> str:
+    normalized_ticker = str(ticker).upper().strip()
+    if not normalized_ticker:
+        raise RuntimeError("Ticker is required.")
+    if shares <= 0:
+        raise RuntimeError("Shares must be greater than zero.")
+    if avg_price <= 0:
+        raise RuntimeError("Average cost must be greater than zero.")
+
+    db.upsert_manual_holding(
+        ticker=normalized_ticker,
+        company_name=company_name.strip() or normalized_ticker,
+        shares=float(shares),
+        avg_price=float(avg_price),
+        currency=currency,
+        tx_date=purchase_date.isoformat(),
+    )
+    db.add_tracked_tickers({normalized_ticker})
+    return f"Saved {normalized_ticker} manual holding."
+
+
 def _open_robinhood_dialog(sync_service: RobinhoodSyncService) -> None:
     if _supports_dialog():
         @st.dialog("Robinhood Credentials")
@@ -901,8 +931,6 @@ def main() -> None:
     with st.sidebar:
         st.subheader("Sync State")
         st.write(f"Initialized: {bool(profile.get('initialized', False))}")
-        st.write(f"Baseline assets: {len(profile.get('baseline_assets') or [])}")
-        st.write(f"Tracked assets: {len(profile.get('tracked_tickers') or [])}")
         st.write(f"Last sync: {profile.get('last_sync_at') or 'never'}")
         st.write(f"Version: {profile.get('sync_version', 1)}")
 
@@ -984,6 +1012,35 @@ def main() -> None:
             if st.button("Clear", key="clear_margin_button"):
                 st.session_state.margin_override = None
                 st.rerun()
+
+        st.divider()
+        st.subheader("Manual Holdings")
+        with st.expander("Add outside-broker holding", expanded=False):
+            st.caption("Saved by ticker and included in portfolio value, cost basis, and XIRR.")
+            with st.form("manual_holding_form", clear_on_submit=True):
+                manual_ticker = st.text_input("Ticker", placeholder="AAPL", key="manual_holding_ticker")
+                manual_company_name = st.text_input("Company name", placeholder="Optional", key="manual_holding_company")
+                manual_shares = st.number_input("Shares", min_value=0.0, step=1.0, format="%.6f", key="manual_holding_shares")
+                manual_avg_price = st.number_input("Average cost", min_value=0.0, step=1.0, format="%.4f", key="manual_holding_avg_price")
+                manual_purchase_date = st.date_input("Purchase date", value=date.today(), key="manual_holding_purchase_date")
+                manual_currency = st.selectbox("Currency", ["USD", "CAD", "EUR", "GBP"], key="manual_holding_currency")
+                submitted_manual_holding = st.form_submit_button("Save holding", width="stretch")
+
+            if submitted_manual_holding:
+                try:
+                    message = save_manual_holding(
+                        db,
+                        ticker=manual_ticker,
+                        company_name=manual_company_name,
+                        shares=manual_shares,
+                        avg_price=manual_avg_price,
+                        currency=manual_currency,
+                        purchase_date=manual_purchase_date,
+                    )
+                    st.success(message)
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
 
         st.divider()
         st.subheader("Robinhood Sync")
@@ -1158,8 +1215,6 @@ def main() -> None:
                 st.json(
                     {
                         "initialized": bool(profile.get("initialized", False)),
-                        "baseline_assets": len(profile.get("baseline_assets") or []),
-                        "tracked_assets": len(profile.get("tracked_tickers") or []),
                         "baseline_date": profile.get("baseline_date"),
                         "last_sync_at": profile.get("last_sync_at"),
                         "margin_updated_at": profile.get("margin_updated_at"),
@@ -1327,8 +1382,6 @@ def main() -> None:
         st.json(
             {
                 "initialized": bool(profile.get("initialized", False)),
-                "baseline_assets": profile.get("baseline_assets") or [],
-                "tracked_assets": profile.get("tracked_tickers") or [],
                 "baseline_date": profile.get("baseline_date"),
                 "last_sync_at": profile.get("last_sync_at"),
             }

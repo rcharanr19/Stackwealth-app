@@ -693,6 +693,76 @@ class PostgresStore:
             action=f"Upsert portfolio cache for {ticker}",
         )
 
+    def upsert_manual_holding(
+        self,
+        ticker: str,
+        company_name: str,
+        shares: float,
+        avg_price: float,
+        currency: str,
+        tx_date: str,
+    ) -> None:
+        normalized_ticker = str(ticker).upper().strip()
+        normalized_currency = str(currency or "USD").upper().strip() or "USD"
+        normalized_company = str(company_name or normalized_ticker).strip() or normalized_ticker
+        now = datetime.utcnow().isoformat()
+        amount = -abs(float(shares) * float(avg_price))
+        execution_id = f"manual-{normalized_ticker}"
+
+        try:
+            with self.connection.session as session:
+                session.execute(
+                    text("""
+                    INSERT INTO public.transactions
+                    (execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency, created_at)
+                    VALUES (:execution_id, :execution_id, :ticker, :tx_date, 'buy', :shares, :price, :amount, :currency, :created_at)
+                    ON CONFLICT (execution_id) DO UPDATE SET
+                        ticker = EXCLUDED.ticker,
+                        tx_date = EXCLUDED.tx_date,
+                        side = EXCLUDED.side,
+                        shares = EXCLUDED.shares,
+                        price = EXCLUDED.price,
+                        amount = EXCLUDED.amount,
+                        currency = EXCLUDED.currency,
+                        created_at = EXCLUDED.created_at
+                    """),
+                    {
+                        "execution_id": execution_id,
+                        "ticker": normalized_ticker,
+                        "tx_date": tx_date,
+                        "shares": float(shares),
+                        "price": float(avg_price),
+                        "amount": amount,
+                        "currency": normalized_currency,
+                        "created_at": now,
+                    },
+                )
+                session.execute(
+                    text("""
+                    INSERT INTO public.portfolio_cache
+                    (ticker, company_name, shares, avg_price, currency, last_price, market_cap, updated_at)
+                    VALUES (:ticker, :company_name, :shares, :avg_price, :currency, NULL, NULL, :updated_at)
+                    ON CONFLICT (ticker) DO UPDATE SET
+                        company_name = EXCLUDED.company_name,
+                        shares = EXCLUDED.shares,
+                        avg_price = EXCLUDED.avg_price,
+                        currency = EXCLUDED.currency,
+                        updated_at = EXCLUDED.updated_at
+                    """),
+                    {
+                        "ticker": normalized_ticker,
+                        "company_name": normalized_company,
+                        "shares": float(shares),
+                        "avg_price": float(avg_price),
+                        "currency": normalized_currency,
+                        "updated_at": now,
+                    },
+                )
+                session.commit()
+        except Exception as exc:
+            LOGGER.exception("Upsert manual holding failed: %s", exc)
+            raise RuntimeError("Unable to save manual holding") from exc
+
     def refresh_existing_position_core(self, ticker: str) -> None:
         shares, avg_price, currency = self.derive_position_from_transactions(ticker)
         existing = self._fetch_one(

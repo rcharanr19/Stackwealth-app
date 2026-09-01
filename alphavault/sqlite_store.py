@@ -760,6 +760,72 @@ class SQLiteStore:
                 ),
             )
 
+    def upsert_manual_holding(
+        self,
+        ticker: str,
+        company_name: str,
+        shares: float,
+        avg_price: float,
+        currency: str,
+        tx_date: str,
+    ) -> None:
+        normalized_ticker = str(ticker).upper().strip()
+        normalized_currency = str(currency or "USD").upper().strip() or "USD"
+        normalized_company = str(company_name or normalized_ticker).strip() or normalized_ticker
+        now = datetime.utcnow().isoformat()
+        amount = -abs(float(shares) * float(avg_price))
+        execution_id = f"manual-{normalized_ticker}"
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO transactions
+                (execution_id, order_id, ticker, tx_date, side, shares, price, amount, currency, created_at)
+                VALUES (?, ?, ?, ?, 'buy', ?, ?, ?, ?, ?)
+                ON CONFLICT(execution_id) DO UPDATE SET
+                    ticker = excluded.ticker,
+                    tx_date = excluded.tx_date,
+                    side = excluded.side,
+                    shares = excluded.shares,
+                    price = excluded.price,
+                    amount = excluded.amount,
+                    currency = excluded.currency,
+                    created_at = excluded.created_at
+                """,
+                (
+                    execution_id,
+                    execution_id,
+                    normalized_ticker,
+                    tx_date,
+                    float(shares),
+                    float(avg_price),
+                    amount,
+                    normalized_currency,
+                    now,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO portfolio_cache
+                (ticker, company_name, shares, avg_price, currency, last_price, market_cap, updated_at)
+                VALUES (?, ?, ?, ?, ?, NULL, NULL, ?)
+                ON CONFLICT(ticker) DO UPDATE SET
+                    company_name = excluded.company_name,
+                    shares = excluded.shares,
+                    avg_price = excluded.avg_price,
+                    currency = excluded.currency,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    normalized_ticker,
+                    normalized_company,
+                    float(shares),
+                    float(avg_price),
+                    normalized_currency,
+                    now,
+                ),
+            )
+
     def refresh_existing_position_core(self, ticker: str) -> None:
         shares, avg_price, currency = self.derive_position_from_transactions(ticker)
         LOGGER.debug("Refreshing existing position core for %s: shares=%.4f avg_price=%.4f currency=%s", ticker, shares, avg_price, currency)
