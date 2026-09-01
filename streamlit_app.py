@@ -967,77 +967,23 @@ def main() -> None:
 
         st.divider()
         
-        # Margin override configuration
-        st.subheader("💳 Margin Override")
-        actual_margin = float(profile.get("margin_balance_usd") or 0.0)
+        # Manual margin balance input
+        st.subheader("💳 Margin Balance")
+        st.caption("Enter your margin balance manually (persists until cleared)")
         
-        use_override = st.checkbox(
-            "Override Margin Balance",
-            value=st.session_state.margin_override is not None,
-            help="Temporarily override the margin balance for Net Portfolio Value calculation",
-            key="margin_override_toggle",
-        )
-        
-        if use_override:
-            st.session_state.margin_override = st.number_input(
-                "Margin Balance Override",
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.session_state.margin_override = col1.number_input(
+                "Margin Balance ($)",
                 min_value=0.0,
-                value=st.session_state.margin_override if st.session_state.margin_override is not None else actual_margin,
+                value=st.session_state.margin_override if st.session_state.margin_override is not None else 0.0,
                 step=100.0,
-                help="Enter custom margin balance amount",
-                key="margin_override_input",
+                key="manual_margin_balance",
             )
-            
-            if st.session_state.margin_override != actual_margin:
-                diff = st.session_state.margin_override - actual_margin
-                st.metric(
-                    "Difference from Actual",
-                    f"${diff:,.2f}",
-                    delta=f"Override: ${st.session_state.margin_override:,.2f} vs Actual: ${actual_margin:,.2f}",
-                )
-        else:
-            st.session_state.margin_override = None
-            st.caption(f"Using actual margin balance: ${actual_margin:,.2f}")
-        
-        # Margin diagnostics
-        with st.expander("🔍 Margin Diagnostics", expanded=False):
-            st.subheader("Margin Sync Status")
-            
-            margin_updated = profile.get("margin_updated_at")
-            margin_balance = profile.get("margin_balance_usd")
-            
-            col1, col2 = st.columns(2)
-            col1.metric("Margin Balance", f"${margin_balance:,.2f}" if margin_balance else "Not synced")
-            col2.metric("Last Synced", margin_updated or "Never")
-            
-            if not margin_balance or margin_balance == 0.0:
-                st.warning("""
-                ⚠️ **Margin balance not synced or is $0**
-                
-                **This could mean:**
-                - **SSL/TLS Connection Issue** (Streamlit Cloud) - Robinhood API blocked due to certificate handshake failure
-                - First time syncing (margin fetches after login)
-                - No margin is in use (account is cash-only)
-                
-                **Streamlit Cloud Note:**
-                Streamlit Cloud may have SSL certificate issues with Robinhood's Phoenix API. The app will:
-                1. Try Account Profile (most reliable) ✓
-                2. Try Portfolio Profile ✓
-                3. Skip Phoenix Account (may fail on SSL) ⏭️
-                4. Try direct margin balance endpoints
-                
-                **To check if sync worked:**
-                - Margin data may come from Account or Portfolio profiles
-                - Check app logs for: "Updated Robinhood margin balance:"
-                - If you see "Robinhood margin balance was unavailable" → no margin data found
-                """)
-            
-            # Show raw profile values
-            if st.checkbox("Show raw margin data", key="show_raw_margin"):
-                st.json({
-                    "margin_balance_usd": profile.get("margin_balance_usd"),
-                    "margin_updated_at": profile.get("margin_updated_at"),
-                })
+        with col2:
+            if st.button("Clear", key="clear_margin_button"):
+                st.session_state.margin_override = None
+                st.rerun()
 
         st.divider()
         st.subheader("Robinhood Sync")
@@ -1180,13 +1126,11 @@ def main() -> None:
             day_change_pct = (portfolio_summary_filled["last_day_change_pct"] * portfolio_summary_filled["weight_pct"] / 100.0).sum()
 
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-            margin_label = "💳 Net Portfolio Value*" if st.session_state.margin_override is not None else "Net Portfolio Value"
-            kpi1.metric(margin_label, f"${net_portfolio_value:,.2f}", help="Gross holdings minus margin balance." + (" *Using override value" if st.session_state.margin_override is not None else ""))
-            kpi2.metric("Margin Balance", f"${margin_balance:,.2f}")
+            kpi1.metric("Net Portfolio Value", f"${net_portfolio_value:,.2f}", help="Gross holdings minus margin balance")
+            kpi2.metric("Margin Balance", f"${margin_balance:,.2f}" if margin_balance > 0 else "None entered")
             kpi3.metric("Total Change %", "N/A" if total_change_pct is None else f"{total_change_pct:+.2f}%")
             kpi4.metric("Day Change %", f"{day_change_pct:+.2f}%")
-            margin_updated = _fmt_iso_ts(profile.get("margin_updated_at")) or "not synced"
-            st.caption(f"Gross holdings: ${total_value:,.2f} | Total P&L: ${total_open_pnl:,.2f} | Margin synced: {margin_updated}")
+            st.caption(f"Gross holdings: ${total_value:,.2f} | Total P&L: ${total_open_pnl:,.2f}")
 
             baseline_date_for_chart = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
             value_history = _portfolio_value_history(
