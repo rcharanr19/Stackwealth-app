@@ -297,7 +297,13 @@ def build_metrics_table(
         price = quote.price if quote and quote.price is not None else np.nan
         market_cap = quote.market_cap if quote else np.nan
         previous_close = quote.previous_close if quote and quote.previous_close is not None else np.nan
-        fx_rate = fx_to_usd.get(pos.currency, np.nan)
+        fx_rate = fx_to_usd.get(pos.currency, 1.0)  # Default to 1.0 for USD if not found
+        
+        # Log missing prices for debugging
+        if not np.isfinite(price) and quote is None:
+            LOGGER.warning("No quote found for ticker %s", pos.ticker)
+        elif not np.isfinite(price):
+            LOGGER.debug("Price is NaN/inf for ticker %s; quote exists but price is: %s", pos.ticker, quote.price if quote else "N/A")
 
         unrealized_native = (price - avg_price) * current_shares if np.isfinite(price) and current_shares > 0 and avg_price > 0 else 0.0 if current_shares <= 0 else np.nan
         total_native = realized_native + (unrealized_native if np.isfinite(unrealized_native) else 0.0)

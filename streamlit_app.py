@@ -990,6 +990,12 @@ def main() -> None:
 
     tickers = sorted({str(item).upper().strip() for item in portfolio_summary.get("ticker", pd.Series(dtype=str)).tolist()})
 
+    # Filter out positions with 0 or negative shares from display
+    if not portfolio_summary.empty:
+        shares_col = portfolio_summary.get("shares")
+        if shares_col is not None:
+            portfolio_summary = portfolio_summary[shares_col > 0].copy()
+
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📊 Portfolio Summary",
         "📉 AI Reverse DCF",
