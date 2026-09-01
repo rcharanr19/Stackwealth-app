@@ -231,6 +231,7 @@ def _portfolio_value_history(
     market_service: MarketDataService,
     baseline_date: date,
     margin_balance: float,
+    cash_usd: float = 0.0,
 ) -> pd.DataFrame:
     if portfolio_summary.empty:
         return pd.DataFrame(columns=["Date", "Gross Holdings", "Net Portfolio Value"])
@@ -267,7 +268,7 @@ def _portfolio_value_history(
             {
                 "Date": sample_date,
                 "Gross Holdings": gross_value,
-                "Net Portfolio Value": gross_value - float(margin_balance or 0.0),
+                "Net Portfolio Value": gross_value + cash_usd - float(margin_balance or 0.0),
             }
         )
 
@@ -1007,7 +1008,8 @@ def main() -> None:
             total_value = float(portfolio_summary["current_value"].sum(skipna=True))
             # Use margin override if set, otherwise use actual margin balance
             margin_balance = st.session_state.margin_override if st.session_state.margin_override is not None else float(profile.get("margin_balance_usd") or 0.0)
-            net_portfolio_value = total_value - margin_balance
+            cash_usd = float(profile.get("cash_usd") or 0.0)
+            net_portfolio_value = total_value + cash_usd - margin_balance
             total_cost = float(portfolio_summary["cost_basis"].sum(skipna=True))
             total_open_pnl = float(portfolio_summary["open_pnl"].sum(skipna=True))
             total_change_pct = ((total_open_pnl / total_cost) * 100.0) if total_cost > 0 else None
@@ -1034,6 +1036,7 @@ def main() -> None:
                 market_service,
                 baseline_date_for_chart,
                 margin_balance,
+                cash_usd,
             )
             if len(value_history) > 1:
                 st.subheader("Portfolio Value Over Time")
