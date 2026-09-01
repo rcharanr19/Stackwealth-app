@@ -248,7 +248,7 @@ class SQLiteStore:
         with self._connect() as conn:
             pos_rows = conn.execute(
                 """
-                SELECT ticker, company_name, shares, avg_price, currency
+                SELECT ticker, company_name, shares, avg_price, currency, last_price, market_cap
                 FROM portfolio_cache
                 ORDER BY ticker
                 """
@@ -270,6 +270,8 @@ class SQLiteStore:
                 shares=float(row["shares"]),
                 avg_price=float(row["avg_price"]),
                 currency=str(row["currency"]),
+                last_price=float(row["last_price"]) if row["last_price"] is not None else None,
+                market_cap=float(row["market_cap"]) if row["market_cap"] is not None else None,
             )
             for row in pos_rows
         ]
@@ -626,7 +628,7 @@ class SQLiteStore:
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT ticker, company_name, shares, avg_price, currency
+                SELECT ticker, company_name, shares, avg_price, currency, last_price, market_cap
                 FROM portfolio_cache
                 WHERE ticker = ?
                 """,
@@ -642,6 +644,8 @@ class SQLiteStore:
             shares=float(row["shares"]),
             avg_price=float(row["avg_price"]),
             currency=str(row["currency"]),
+            last_price=float(row["last_price"]) if row["last_price"] is not None else None,
+            market_cap=float(row["market_cap"]) if row["market_cap"] is not None else None,
         )
 
     def list_unprovisioned_tickers(self) -> list[str]:

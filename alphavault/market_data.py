@@ -361,6 +361,53 @@ class MarketDataService:
 
         return prices
 
+    def cached_snapshot(
+        self,
+        tickers: Iterable[str],
+        currencies: Iterable[str],
+        fallback_quotes: dict[str, Quote] | None = None,
+    ) -> Snapshot:
+        ticker_list = [str(t).upper().strip() for t in tickers if str(t).strip()]
+        currency_list = [str(c).upper().strip() for c in currencies if str(c).strip()]
+        cache_data = self.cache.load()
+        cached_quotes = cache_data.get("quotes", {})
+        cached_fx = cache_data.get("fx", {})
+        fallback_quotes = fallback_quotes or {}
+
+        quotes: dict[str, Quote] = {}
+        stale_tickers: set[str] = set()
+        for ticker in ticker_list:
+            raw_quote = cached_quotes.get(ticker, {}) if isinstance(cached_quotes, dict) else {}
+            fallback = fallback_quotes.get(ticker)
+            price = raw_quote.get("price") if isinstance(raw_quote, dict) else None
+            market_cap = raw_quote.get("market_cap") if isinstance(raw_quote, dict) else None
+            previous_close = raw_quote.get("previous_close") if isinstance(raw_quote, dict) else None
+            company_name = raw_quote.get("company_name") if isinstance(raw_quote, dict) else None
+            currency = raw_quote.get("currency") if isinstance(raw_quote, dict) else None
+
+            if price is None and fallback is not None:
+                price = fallback.price
+                market_cap = fallback.market_cap
+                currency = fallback.currency
+
+            quotes[ticker] = Quote(
+                price=float(price) if price is not None else None,
+                market_cap=float(market_cap) if market_cap is not None else None,
+                previous_close=float(previous_close) if previous_close is not None else None,
+                company_name=company_name or (fallback.company_name if fallback else None),
+                currency=currency or (fallback.currency if fallback else None),
+            )
+            if price is None:
+                stale_tickers.add(ticker)
+
+        fx_to_usd = {"USD": 1.0}
+        if isinstance(cached_fx, dict):
+            fx_to_usd.update({str(k).upper(): float(v) for k, v in cached_fx.items() if v is not None})
+        for currency in currency_list:
+            fx_to_usd.setdefault(currency, 1.0)
+
+        return Snapshot(quotes=quotes, fx_to_usd=fx_to_usd, online=False, stale_tickers=stale_tickers)
+
     def refresh_snapshot(self, tickers: Iterable[str], currencies: Iterable[str]) -> Snapshot:
         ticker_list = [str(t).upper().strip() for t in tickers]
         currency_list = [str(c).upper().strip() for c in currencies]

@@ -23,6 +23,7 @@ from alphavault.finance_engine import (
 from alphavault.postgres_store import PostgresStore
 from alphavault.logging_utils import configure_logging
 from alphavault.market_data import MarketDataService
+from alphavault.models import Quote
 from alphavault.robinhood_sync import RobinhoodSyncService
 from tabs.ai_analysis import (
     get_reverse_dcf_analysis,
@@ -578,7 +579,7 @@ def get_services() -> tuple[PostgresStore, MarketDataService, RobinhoodSyncServi
     return db, market_service, sync_service
 
 
-def compute_dashboard(db: PostgresStore, market_service: MarketDataService) -> tuple[pd.DataFrame, dict[str, object], dict[str, object]]:
+def compute_dashboard(db: PostgresStore, market_service: MarketDataService, refresh_market_data: bool = False) -> tuple[pd.DataFrame, dict[str, object], dict[str, object]]:
     profile = db.get_sync_profile() or db.bootstrap_sync_profile_from_portfolio_json(PORTFOLIO_JSON)
     positions, transactions = db.load_portfolio_state()
     transactions = exclude_seed_transactions_with_real_history(transactions)
@@ -592,7 +593,28 @@ def compute_dashboard(db: PostgresStore, market_service: MarketDataService) -> t
 
     tickers = [position.ticker for position in positions]
     currencies = [position.currency for position in positions]
-    snapshot = market_service.refresh_snapshot(tickers=tickers, currencies=currencies)
+    fallback_quotes = {
+        position.ticker: Quote(
+            price=position.last_price,
+            market_cap=position.market_cap,
+            currency=position.currency,
+        )
+        for position in positions
+        if position.last_price is not None
+    }
+    if refresh_market_data:
+        snapshot = market_service.refresh_snapshot(tickers=tickers, currencies=currencies)
+    elif hasattr(market_service, "cached_snapshot"):
+        snapshot = market_service.cached_snapshot(tickers=tickers, currencies=currencies, fallback_quotes=fallback_quotes)
+    else:
+        snapshot = market_service.refresh_snapshot(tickers=tickers, currencies=currencies)
+
+    for ticker, fallback_quote in fallback_quotes.items():
+        quote = snapshot.quotes.get(ticker)
+        if quote is None or quote.price is None:
+            snapshot.quotes[ticker] = fallback_quote
+            snapshot.stale_tickers.add(ticker)
+
     metrics = build_metrics_table(
         positions=positions,
         transactions=transactions,
@@ -1047,6 +1069,7 @@ def main() -> None:
                 st.error(str(exc))
 
         if st.button("Refresh market data", width="stretch"):
+            st.session_state["refresh_market_data"] = True
             st.rerun()
 
     if st.session_state.pop("refresh_after_sync", False):
@@ -1054,7 +1077,12 @@ def main() -> None:
 
     try:
         # Use compute_dashboard to get the FX-normalized metrics (USD-aware)
-        metrics, since_start, profile = compute_dashboard(db, market_service)
+        refresh_market_data = bool(st.session_state.pop("refresh_market_data", False))
+        if refresh_market_data:
+            with st.spinner("Refreshing market prices..."):
+                metrics, since_start, profile = compute_dashboard(db, market_service, refresh_market_data=True)
+        else:
+            metrics, since_start, profile = compute_dashboard(db, market_service, refresh_market_data=False)
         _positions_for_detail, transactions_for_detail = db.load_portfolio_state()
         transactions_for_detail = exclude_seed_transactions_with_real_history(transactions_for_detail)
         portfolio_summary = metrics if not metrics.empty else metrics

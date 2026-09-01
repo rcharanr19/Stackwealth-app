@@ -252,7 +252,7 @@ class PostgresStore:
     def load_portfolio_state(self) -> tuple[list[Position], list[Transaction]]:
         pos_df = self._query_df(
             """
-            SELECT ticker, company_name, shares, avg_price, currency
+            SELECT ticker, company_name, shares, avg_price, currency, last_price, market_cap
             FROM public.portfolio_cache
             ORDER BY ticker
             """,
@@ -274,6 +274,8 @@ class PostgresStore:
                 shares=float(row["shares"]),
                 avg_price=float(row["avg_price"]),
                 currency=str(row["currency"]),
+                last_price=float(row["last_price"]) if row.get("last_price") is not None else None,
+                market_cap=float(row["market_cap"]) if row.get("market_cap") is not None else None,
             )
             for _, row in pos_df.iterrows()
         ]
@@ -562,7 +564,7 @@ class PostgresStore:
     def get_portfolio_position(self, ticker: str) -> Position | None:
         row = self._fetch_one(
             """
-            SELECT ticker, company_name, shares, avg_price, currency
+            SELECT ticker, company_name, shares, avg_price, currency, last_price, market_cap
             FROM public.portfolio_cache
             WHERE ticker = :ticker
             """,
@@ -577,6 +579,8 @@ class PostgresStore:
             shares=float(row["shares"]),
             avg_price=float(row["avg_price"]),
             currency=str(row["currency"]),
+            last_price=float(row["last_price"]) if row.get("last_price") is not None else None,
+            market_cap=float(row["market_cap"]) if row.get("market_cap") is not None else None,
         )
 
     def list_unprovisioned_tickers(self) -> list[str]:

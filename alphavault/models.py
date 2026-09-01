@@ -12,6 +12,8 @@ class Position:
     shares: float
     avg_price: float
     currency: str
+    last_price: float | None = None
+    market_cap: float | None = None
 
 
 @dataclass(slots=True)
@@ -51,6 +53,8 @@ def parse_position(raw: dict[str, Any]) -> Position:
         shares=float(raw["shares"]),
         avg_price=float(raw["avg_price"]),
         currency=str(raw["currency"]).upper().strip(),
+        last_price=float(raw["last_price"]) if raw.get("last_price") not in (None, "") else None,
+        market_cap=float(raw["market_cap"]) if raw.get("market_cap") not in (None, "") else None,
     )
 
 
