@@ -35,6 +35,22 @@ from tabs.ai_analysis import (
     _fetch_sec_financials_for_symbol,
 )
 from tabs.ai_analysis import FMP_SUPPORTED_TICKERS
+from tabs.portfolio_analytics import (
+    identify_tax_loss_harvesting_candidates,
+    calculate_tax_impact,
+    get_wash_sale_alert,
+    calculate_dividend_projections,
+    get_dividend_summary,
+    benchmark_portfolio_returns,
+    get_benchmark_summary,
+)
+from tabs.tax_settings import (
+    TaxSettings,
+    get_state_list,
+    get_no_income_tax_states,
+    calculate_total_tax_rate,
+    format_tax_rate,
+)
 
 
 configure_logging()
@@ -705,7 +721,11 @@ def main() -> None:
     require_login()
     st.title("StackWealth")
     st.caption("Baseline-first Robinhood sync with durable first-run state.")
-
+    
+    # Initialize tax settings in session state
+    if "tax_settings" not in st.session_state:
+        st.session_state.tax_settings = TaxSettings()
+    
     try:
         db, market_service, sync_service = get_services()
     except Exception as exc:
@@ -727,6 +747,65 @@ def main() -> None:
         st.write(f"Tracked assets: {len(profile.get('tracked_tickers') or [])}")
         st.write(f"Last sync: {profile.get('last_sync_at') or 'never'}")
         st.write(f"Version: {profile.get('sync_version', 1)}")
+
+        st.divider()
+        
+        # Tax settings configuration
+        st.subheader("⚙️ Tax Settings")
+        with st.expander("Configure Tax Parameters", expanded=False):
+            tax_settings = st.session_state.tax_settings
+            
+            # AGI Input
+            tax_settings.agi = st.number_input(
+                "Adjusted Gross Income (AGI)",
+                min_value=0.0,
+                value=tax_settings.agi,
+                step=10000.0,
+                help="Your 2024 AGI affects LTCG rate brackets and NIIT eligibility",
+                key="agi_input",
+            )
+            
+            # Filing status
+            filing_options = ["single", "married_filing_jointly", "married_filing_separately", "head_of_household"]
+            tax_settings.filing_status = st.selectbox(
+                "Filing Status",
+                filing_options,
+                index=filing_options.index(tax_settings.filing_status),
+                key="filing_status_input",
+            )
+            
+            # State selection
+            state_list = get_state_list()
+            state_options = [s[0] for s in state_list]
+            state_names = [f"{s[0]} - {s[1]}" for s in state_list]
+            current_idx = state_options.index(tax_settings.state) if tax_settings.state in state_options else 0
+            
+            selected_state_display = st.selectbox(
+                "State",
+                state_names,
+                index=current_idx,
+                key="state_input",
+            )
+            tax_settings.state = selected_state_display.split(" - ")[0]
+            
+            # Display calculated rates
+            st.divider()
+            col1, col2 = st.columns(2)
+            
+            # Get rates
+            from tabs.tax_settings import get_federal_ltcg_rate, get_state_ltcg_rate
+            fed_rate = get_federal_ltcg_rate(tax_settings.agi, tax_settings.filing_status)
+            state_rate = get_state_ltcg_rate(tax_settings.state)
+            total_rate = fed_rate + state_rate
+            
+            col1.metric("Federal LTCG Rate", format_tax_rate(fed_rate))
+            col2.metric("State Tax Rate", format_tax_rate(state_rate))
+            
+            st.metric("Combined Rate", format_tax_rate(total_rate))
+            
+            # No income tax states highlight
+            if tax_settings.state in get_no_income_tax_states():
+                st.success(f"✅ {tax_settings.state} has no state income tax!")
 
         st.divider()
         st.subheader("Robinhood Sync")
@@ -832,7 +911,15 @@ def main() -> None:
 
     tickers = sorted({str(item).upper().strip() for item in portfolio_summary.get("ticker", pd.Series(dtype=str)).tolist()})
 
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Portfolio Summary", "📉 AI Reverse DCF", "📋 AI Transcript Mosaic", "📜 Investment Thesis"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "📊 Portfolio Summary",
+        "📉 AI Reverse DCF",
+        "📋 AI Transcript Mosaic",
+        "📜 Investment Thesis",
+        "💰 Tax Loss Harvesting",
+        "💵 Dividend Dashboard",
+        "📈 Benchmark Comparison",
+    ])
 
     with tab1:
         st.subheader("Portfolio Summary")
@@ -1371,6 +1458,316 @@ def main() -> None:
                         else:
                             st.error(f"Investment thesis generation failed: {exc}")
 
+    # ===== TAB 5: TAX LOSS HARVESTING =====
+    with tab5:
+        st.subheader("💰 Tax Loss Harvesting")
+        st.markdown("""
+        Identify positions with unrealized losses that can be harvested for tax benefits.
+        
+        **Key Concepts:**
+        - **Tax Loss Harvesting**: Sell losing positions to offset capital gains elsewhere
+        - **Wash-Sale Rule**: Wait 30+ days before repurchasing the same or substantially identical security
+        - **Tax-Loss Carryforward**: Unused losses can offset future gains (up to $3,000/year of ordinary income)
+        """)
+        
+        if portfolio_summary.empty:
+            st.info("No holdings available for analysis.")
+        else:
+            # Identify candidates
+            candidates = identify_tax_loss_harvesting_candidates(portfolio_summary)
+            
+            if candidates.empty:
+                st.success("✅ No positions with losses. Great job!")
+            else:
+                st.warning(f"⚠️ Found {len(candidates)} position(s) with unrealized losses")
+                
+                # Display candidates
+                st.subheader("Harvesting Candidates")
+                candidates_display = candidates.copy()
+                styler = candidates_display.style.format({
+                    "Current Value": "${:,.2f}",
+                    "Loss Amount": "${:,.2f}",
+                    "Loss %": "{:.2f}%",
+                    "Portfolio Weight %": "{:.2f}%",
+                })
+                st.dataframe(styler, use_container_width=True)
+                
+                # Tax impact analysis with user's configured settings
+                st.subheader("Tax Impact Analysis")
+                tax_metrics = calculate_tax_impact(portfolio_summary, st.session_state.tax_settings)
+                
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric(
+                    "Total Unrealized Gains",
+                    f"${tax_metrics['total_unrealized_gain']:,.2f}",
+                )
+                c2.metric(
+                    "Total Unrealized Losses",
+                    f"${tax_metrics['total_unrealized_loss']:,.2f}",
+                )
+                c3.metric(
+                    "Est. Total Tax",
+                    f"${tax_metrics['estimated_tax_on_gains']:,.2f}",
+                    help=f"Federal: ${tax_metrics['federal_tax']:,.0f} + State: ${tax_metrics['state_tax']:,.0f} + NIIT: ${tax_metrics['niit_amount']:,.0f}",
+                )
+                c4.metric(
+                    "Harvest Tax Benefit",
+                    f"${tax_metrics['tax_loss_harvesting_benefit']:,.2f}",
+                    delta=f"Effective tax rate: {tax_metrics['effective_tax_rate']:.2f}%",
+                )
+                
+                # Tax breakdown
+                st.caption(f"""
+                Tax Breakdown: Federal {format_tax_rate(tax_metrics['federal_rate'])} + 
+                State {format_tax_rate(tax_metrics['state_rate'])} 
+                {f"+ NIIT {format_tax_rate(3.8/100)}" if tax_metrics['niit_amount'] > 0 else ""}
+                """)
+                
+                # Harvesting strategy
+                st.subheader("Harvesting Strategy")
+                if candidates.iloc[0]["Loss Amount"] > 0:
+                    top_candidate = candidates.iloc[0]
+                    tax_benefit = top_candidate["Loss Amount"] * (tax_metrics['federal_rate'] + tax_metrics['state_rate'])
+                    st.markdown(f"""
+                    **Top Harvesting Candidate: {top_candidate['Ticker']}**
+                    - **Company**: {top_candidate['Company']}
+                    - **Loss Amount**: ${top_candidate['Loss Amount']:,.2f}
+                    - **Loss %**: {top_candidate['Loss %']:.2f}%
+                    - **Tax Benefit** ({format_tax_rate(tax_metrics['federal_rate'] + tax_metrics['state_rate'])} combined): ${tax_benefit:,.2f}
+                    
+                    {get_wash_sale_alert(top_candidate['Ticker'], portfolio_summary)}
+                    """)
+                
+                # Harvesting calculator
+                st.subheader("Harvesting Calculator")
+                selected_harvest_ticker = st.selectbox(
+                    "Select position to harvest",
+                    candidates["Ticker"].tolist(),
+                    key="harvest_ticker",
+                )
+                
+                if selected_harvest_ticker:
+                    harvest_row = candidates[candidates["Ticker"] == selected_harvest_ticker].iloc[0]
+                    tax_rate = tax_metrics['federal_rate'] + tax_metrics['state_rate']
+                    
+                    tax_benefit = harvest_row["Loss Amount"] * tax_rate
+                    
+                    st.markdown(f"""
+                    **Harvest Summary for {harvest_row['Ticker']}**
+                    - **Realized Loss**: ${harvest_row['Loss Amount']:,.2f}
+                    - **Your Tax Rate**: {format_tax_rate(tax_rate)} 
+                      (Federal: {format_tax_rate(tax_metrics['federal_rate'])} + State: {format_tax_rate(tax_metrics['state_rate'])})
+                    - **Tax Benefit**: ${tax_benefit:,.2f}
+                    
+                    **Your Tax Profile:**
+                    - **AGI**: ${st.session_state.tax_settings.agi:,.0f}
+                    - **Filing Status**: {st.session_state.tax_settings.filing_status}
+                    - **State**: {st.session_state.tax_settings.state}
+                    
+                    **Next Steps:**
+                    1. Harvest loss by selling position
+                    2. Wait 30+ days (wash-sale period)
+                    3. Reinvest in similar but non-identical security
+                    4. Track for tax reporting (Schedule D)
+                    """)
+            
+            # Diversification suggestion
+            st.subheader("Reinvestment Ideas")
+            st.markdown("""
+            After harvesting, consider these alternatives to avoid wash-sale violations while maintaining exposure:
+            
+            | If You Sold | Consider Instead |
+            |---|---|
+            | VOO (Vanguard S&P 500) | SPY, IVV (similar index funds) |
+            | QQQ (Nasdaq-100) | VUG, XLK (growth/tech sector funds) |
+            | Individual stocks | Sector ETFs or similar-cap alternatives |
+            """)
+
+    # ===== TAB 6: DIVIDEND DASHBOARD =====
+    with tab6:
+        st.subheader("💵 Dividend Dashboard")
+        st.markdown("""
+        Track dividend income across your portfolio. Use this to monitor passive income generation.
+        """)
+        
+        if portfolio_summary.empty:
+            st.info("No holdings available for analysis.")
+        else:
+            # Calculate dividend projections
+            dividends = calculate_dividend_projections(portfolio_summary)
+            div_summary = get_dividend_summary(dividends)
+            
+            # Summary metrics
+            st.subheader("Dividend Summary")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric(
+                "Annual Dividend Income",
+                f"${div_summary['total_annual_dividend']:,.2f}",
+            )
+            m2.metric(
+                "Monthly Income (avg)",
+                f"${div_summary['monthly_income']:,.2f}",
+            )
+            m3.metric(
+                "Blended Yield",
+                f"{div_summary['blended_yield']:.2f}%",
+            )
+            m4.metric(
+                "Dividend Payers",
+                f"{div_summary['dividend_count']}",
+            )
+            
+            if dividends.empty:
+                st.info("📊 No dividend-paying positions currently in portfolio.")
+                st.markdown("""
+                **Income-focused investors** might consider adding:
+                - Dividend aristocrats (25+ years of increases)
+                - High-yield dividend ETFs
+                - REITs for stable income
+                - Preferred stocks for consistent distributions
+                """)
+            else:
+                # Dividend by position
+                st.subheader("Income by Position")
+                div_display = dividends.copy()
+                styler = div_display.style.format({
+                    "Shares": "{:.4f}",
+                    "Current Price": "${:,.2f}",
+                    "Position Value": "${:,.2f}",
+                    "Dividend Yield %": "{:.2f}%",
+                    "Annual Dividend $": "${:,.2f}",
+                    "Quarterly Estimate": "${:,.2f}",
+                })
+                st.dataframe(styler, use_container_width=True)
+                
+                # Dividend contribution
+                st.subheader("Income Contribution by Position")
+                chart_data = dividends.set_index("Ticker")["Annual Dividend $"]
+                st.bar_chart(chart_data, height=300)
+                
+                # Income timeline
+                st.subheader("Projected Monthly Income")
+                monthly_projection = div_summary["total_annual_dividend"] / 12
+                st.metric(
+                    "Average Monthly Dividend Income",
+                    f"${monthly_projection:,.2f}",
+                    help="Assumes consistent dividend payments throughout the year",
+                )
+                
+                # Income growth strategy
+                st.subheader("Income Growth Strategy")
+                current_income = div_summary["total_annual_dividend"]
+                target_income = st.slider(
+                    "Target Annual Dividend Income",
+                    int(current_income) if current_income > 0 else 1000,
+                    int(current_income * 2) if current_income > 0 else 5000,
+                    step=500,
+                    key="dividend_target",
+                )
+                
+                income_gap = target_income - current_income
+                if income_gap > 0:
+                    avg_yield = div_summary["blended_yield"] / 100
+                    if avg_yield > 0:
+                        capital_needed = income_gap / avg_yield
+                        st.markdown(f"""
+                        **To reach ${target_income:,.2f} annual income:**
+                        - **Capital Gap**: ${capital_needed:,.2f}
+                        - **At current blended yield** ({div_summary['blended_yield']:.2f}%)
+                        - Consider adding dividend stocks or shifting portfolio allocation
+                        """)
+
+    # ===== TAB 7: BENCHMARK COMPARISON =====
+    with tab7:
+        st.subheader("📈 Benchmark Comparison")
+        st.markdown("""
+        Compare your portfolio returns against major market indices to assess performance and alpha generation.
+        """)
+        
+        if portfolio_summary.empty or not transactions_for_detail:
+            st.info("Insufficient data for benchmark comparison.")
+        else:
+            baseline_date_for_benchmark = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
+            
+            # Benchmark comparison
+            benchmark_df = benchmark_portfolio_returns(
+                portfolio_summary,
+                transactions_for_detail,
+                baseline_date_for_benchmark,
+                indices=["SPY", "QQQ", "VXUS"],
+            )
+            
+            bench_summary = get_benchmark_summary(benchmark_df)
+            
+            # Summary metrics
+            st.subheader("Performance vs Benchmarks")
+            p1, p2, p3, p4 = st.columns(4)
+            
+            p1.metric(
+                "Your Portfolio Return",
+                f"{bench_summary['portfolio_return']:+.2f}%",
+                delta="Performance" if bench_summary['outperformance'] else "Underperformance",
+            )
+            p2.metric(
+                "Avg Benchmark Return",
+                f"{bench_summary['avg_benchmark_return']:+.2f}%",
+            )
+            p3.metric(
+                "Alpha (Over-/Underperformance)",
+                f"{bench_summary['alpha']:+.2f}%",
+                delta="Outperforming" if bench_summary['outperformance'] else "Underperforming",
+            )
+            p4.metric(
+                "Baseline Period",
+                baseline_date_for_benchmark.strftime("%b %d, %Y"),
+            )
+            
+            # Benchmark table
+            st.subheader("Detailed Comparison")
+            bench_display = benchmark_df.copy()
+            bench_display["Return %"] = bench_display["Return %"].apply(lambda x: f"{x:+.2f}%")
+            st.dataframe(bench_display, use_container_width=True, hide_index=True)
+            
+            # Performance chart
+            st.subheader("Return Comparison")
+            chart_data = benchmark_df.set_index("Ticker")["Return %"].str.rstrip('%').astype(float)
+            st.bar_chart(chart_data, height=300)
+            
+            # Analysis
+            st.subheader("Performance Analysis")
+            
+            if bench_summary['outperformance']:
+                st.success(f"""
+                ✅ **Outperforming by {bench_summary['alpha']:.2f}%**
+                
+                Your portfolio is beating the average benchmark return. This could indicate:
+                - Strong stock-picking decisions
+                - Good market timing
+                - Successful tactical allocation shifts
+                - Sector or style advantages
+                """)
+            else:
+                st.warning(f"""
+                ⚠️ **Underperforming by {abs(bench_summary['alpha']):.2f}%**
+                
+                Your portfolio is trailing the average benchmark. Consider:
+                - Review position sizing and allocation
+                - Analyze which holdings are dragging performance
+                - Consider rebalancing toward underweight sectors
+                - Evaluate if fees/costs are impacting returns
+                """)
+            
+            # Peer comparison context
+            st.subheader("Benchmark Information")
+            st.markdown("""
+            | Benchmark | Ticker | Coverage |
+            |---|---|---|
+            | S&P 500 | SPY | Large-cap US equities |
+            | Nasdaq-100 | QQQ | Growth & tech-heavy |
+            | Intl Stocks | VXUS | Developed & emerging markets |
+            
+            **Note**: Alpha calculation is a simple comparison. True alpha analysis requires risk-adjustment (Sharpe ratio, beta).
+            """)
 
 if __name__ == "__main__":
     main()
