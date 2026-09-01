@@ -844,6 +844,40 @@ def main() -> None:
         else:
             st.session_state.margin_override = None
             st.caption(f"Using actual margin balance: ${actual_margin:,.2f}")
+        
+        # Margin diagnostics
+        with st.expander("🔍 Margin Diagnostics", expanded=False):
+            st.subheader("Margin Sync Status")
+            
+            margin_updated = profile.get("margin_updated_at")
+            margin_balance = profile.get("margin_balance_usd")
+            
+            col1, col2 = st.columns(2)
+            col1.metric("Margin Balance", f"${margin_balance:,.2f}" if margin_balance else "Not synced")
+            col2.metric("Last Synced", margin_updated or "Never")
+            
+            if not margin_balance or margin_balance == 0.0:
+                st.warning("""
+                ⚠️ **Margin balance not synced or is $0**
+                
+                **This could mean:**
+                - First time syncing (margin fetches after login)
+                - Robinhood API endpoints are unavailable
+                - No margin is in use (account is cash-only)
+                
+                **To debug:**
+                1. Run the debug script: `python scripts/debug_margin_sync.py`
+                2. Enable debug logging: `set STACKWEALTH_DEBUG=1` (Windows)
+                3. Run: `streamlit run streamlit_app.py`
+                4. Check terminal output for margin API responses
+                """)
+            
+            # Show raw profile values
+            if st.checkbox("Show raw margin data", key="show_raw_margin"):
+                st.json({
+                    "margin_balance_usd": profile.get("margin_balance_usd"),
+                    "margin_updated_at": profile.get("margin_updated_at"),
+                })
 
         st.divider()
         st.subheader("Robinhood Sync")
