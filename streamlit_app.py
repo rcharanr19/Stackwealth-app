@@ -595,12 +595,12 @@ def compute_dashboard(db: PostgresStore, market_service: MarketDataService, refr
     currencies = [position.currency for position in positions]
     fallback_quotes = {
         position.ticker: Quote(
-            price=position.last_price,
-            market_cap=position.market_cap,
+            price=getattr(position, "last_price", None),
+            market_cap=getattr(position, "market_cap", None),
             currency=position.currency,
         )
         for position in positions
-        if position.last_price is not None
+        if getattr(position, "last_price", None) is not None
     }
     if refresh_market_data:
         snapshot = market_service.refresh_snapshot(tickers=tickers, currencies=currencies)
