@@ -39,10 +39,6 @@ from tabs.portfolio_analytics import (
     identify_tax_loss_harvesting_candidates,
     calculate_tax_impact,
     get_wash_sale_alert,
-    calculate_dividend_projections,
-    get_dividend_summary,
-    benchmark_portfolio_returns,
-    get_benchmark_summary,
 )
 from tabs.tax_settings import (
     TaxSettings,
@@ -1152,14 +1148,12 @@ def main() -> None:
         if shares_col is not None:
             portfolio_summary = portfolio_summary[shares_col > 0].copy()
 
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "📊 Portfolio Summary",
         "📉 AI Reverse DCF",
         "📋 AI Transcript Mosaic",
         "📜 Investment Thesis",
         "💰 Tax Loss Harvesting",
-        "💵 Dividend Dashboard",
-        "📈 Benchmark Comparison",
     ])
 
     with tab1:
@@ -1189,18 +1183,20 @@ def main() -> None:
             kpi4.metric("Day Change %", f"{day_change_pct:+.2f}%")
             st.caption(f"Gross holdings: ${total_value:,.2f} | Total P&L: ${total_open_pnl:,.2f}")
 
-            baseline_date_for_chart = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
-            value_history = _portfolio_value_history(
-                portfolio_summary,
-                transactions_for_detail,
-                market_service,
-                baseline_date_for_chart,
-                margin_balance,
-                cash_usd,
-            )
-            if len(value_history) > 1:
-                st.subheader("Portfolio Value Over Time")
-                st.line_chart(value_history.set_index("Date"), height=320)
+            if st.toggle("Show portfolio value history", value=False, key="show_portfolio_value_history"):
+                baseline_date_for_chart = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
+                with st.spinner("Loading historical portfolio values..."):
+                    value_history = _portfolio_value_history(
+                        portfolio_summary,
+                        transactions_for_detail,
+                        market_service,
+                        baseline_date_for_chart,
+                        margin_balance,
+                        cash_usd,
+                    )
+                if len(value_history) > 1:
+                    st.subheader("Portfolio Value Over Time")
+                    st.line_chart(value_history.set_index("Date"), height=320)
 
             with st.expander("Portfolio Diagnostics", expanded=False):
                 top_holding = float(portfolio_summary["weight_pct"].max(skipna=True)) if "weight_pct" in portfolio_summary else 0.0
@@ -1319,8 +1315,8 @@ def main() -> None:
             styled = styler.map(style_signed_value, subset=signed_columns)
             st.dataframe(styled, width="stretch")
 
-            if not view_summary.empty:
-                selected_detail_ticker = st.selectbox("Ticker Detail", view_summary["ticker"].tolist(), key="portfolio_detail_ticker")
+            if not view_summary.empty and st.toggle("Show ticker detail", value=False, key="show_ticker_detail"):
+                selected_detail_ticker = st.selectbox("Ticker", view_summary["ticker"].tolist(), key="portfolio_detail_ticker")
                 detail_row = view_summary[view_summary["ticker"] == selected_detail_ticker].iloc[0]
                 detail_cols = st.columns(5)
                 detail_cols[0].metric("Shares", f"{float(detail_row.get('shares') or 0.0):,.4f}")
@@ -1360,23 +1356,24 @@ def main() -> None:
                 except Exception as exc:
                     st.error(f"AI Overview generation failed: {exc}")
 
-            # --- Show cached portfolio overview report below the button ---
-            try:
-                cached_portfolio_overview = db.get_latest_ai_report("PORTFOLIO", "portfolio_overview")
-            except Exception:
-                cached_portfolio_overview = None
+            if st.toggle("Show latest saved AI overview", value=False, key="show_saved_ai_overview"):
+                try:
+                    cached_portfolio_overview = db.get_latest_ai_report("PORTFOLIO", "portfolio_overview")
+                except Exception:
+                    cached_portfolio_overview = None
 
-            if cached_portfolio_overview and cached_portfolio_overview.get("report_md"):
-                ts = _fmt_iso_ts(cached_portfolio_overview.get("created_at"))
-                title = "Latest Saved AI Overview" + (f" — Generated {ts}" if ts else "")
-                # compute lightweight current hash to detect staleness without expensive enrichment
-                current_brief_hash = _brief_portfolio_hash(metrics, portfolio_summary, profile)
-                saved_inputs = cached_portfolio_overview.get("inputs") or {}
-                saved_hash = saved_inputs.get("portfolio_hash") if isinstance(saved_inputs, dict) else None
-                if saved_hash and current_brief_hash and saved_hash != current_brief_hash:
-                    title += " — Stale (snapshot changed)"
-                st.subheader(title)
-                st.markdown(cached_portfolio_overview.get("report_md") or "")
+                if cached_portfolio_overview and cached_portfolio_overview.get("report_md"):
+                    ts = _fmt_iso_ts(cached_portfolio_overview.get("created_at"))
+                    title = "Latest Saved AI Overview" + (f" — Generated {ts}" if ts else "")
+                    current_brief_hash = _brief_portfolio_hash(metrics, portfolio_summary, profile)
+                    saved_inputs = cached_portfolio_overview.get("inputs") or {}
+                    saved_hash = saved_inputs.get("portfolio_hash") if isinstance(saved_inputs, dict) else None
+                    if saved_hash and current_brief_hash and saved_hash != current_brief_hash:
+                        title += " — Stale (snapshot changed)"
+                    st.subheader(title)
+                    st.markdown(cached_portfolio_overview.get("report_md") or "")
+                else:
+                    st.info("No saved AI overview found.")
 
         st.subheader("Status")
         st.json(
@@ -1791,194 +1788,6 @@ def main() -> None:
             | VOO (Vanguard S&P 500) | SPY, IVV (similar index funds) |
             | QQQ (Nasdaq-100) | VUG, XLK (growth/tech sector funds) |
             | Individual stocks | Sector ETFs or similar-cap alternatives |
-            """)
-
-    # ===== TAB 6: DIVIDEND DASHBOARD =====
-    with tab6:
-        st.subheader("💵 Dividend Dashboard")
-        st.markdown("""
-        Track dividend income across your portfolio. Use this to monitor passive income generation.
-        """)
-        
-        if portfolio_summary.empty:
-            st.info("No holdings available for analysis.")
-        else:
-            # Calculate dividend projections
-            dividends = calculate_dividend_projections(portfolio_summary)
-            div_summary = get_dividend_summary(dividends)
-            
-            # Summary metrics
-            st.subheader("Dividend Summary")
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric(
-                "Annual Dividend Income",
-                f"${div_summary['total_annual_dividend']:,.2f}",
-            )
-            m2.metric(
-                "Monthly Income (avg)",
-                f"${div_summary['monthly_income']:,.2f}",
-            )
-            m3.metric(
-                "Blended Yield",
-                f"{div_summary['blended_yield']:.2f}%",
-            )
-            m4.metric(
-                "Dividend Payers",
-                f"{div_summary['dividend_count']}",
-            )
-            
-            if dividends.empty:
-                st.info("📊 No dividend-paying positions currently in portfolio.")
-                st.markdown("""
-                **Income-focused investors** might consider adding:
-                - Dividend aristocrats (25+ years of increases)
-                - High-yield dividend ETFs
-                - REITs for stable income
-                - Preferred stocks for consistent distributions
-                """)
-            else:
-                # Dividend by position
-                st.subheader("Income by Position")
-                div_display = dividends.copy()
-                styler = div_display.style.format({
-                    "Shares": "{:.4f}",
-                    "Current Price": "${:,.2f}",
-                    "Position Value": "${:,.2f}",
-                    "Dividend Yield %": "{:.2f}%",
-                    "Annual Dividend $": "${:,.2f}",
-                    "Quarterly Estimate": "${:,.2f}",
-                })
-                st.dataframe(styler, use_container_width=True)
-                
-                # Dividend contribution
-                st.subheader("Income Contribution by Position")
-                chart_data = dividends.set_index("Ticker")["Annual Dividend $"]
-                st.bar_chart(chart_data, height=300)
-                
-                # Income timeline
-                st.subheader("Projected Monthly Income")
-                monthly_projection = div_summary["total_annual_dividend"] / 12
-                st.metric(
-                    "Average Monthly Dividend Income",
-                    f"${monthly_projection:,.2f}",
-                    help="Assumes consistent dividend payments throughout the year",
-                )
-                
-                # Income growth strategy
-                st.subheader("Income Growth Strategy")
-                current_income = div_summary["total_annual_dividend"]
-                target_min = max(500, int(current_income // 500 * 500)) if current_income > 0 else 1000
-                target_max = max(target_min + 500, int(current_income * 2)) if current_income > 0 else 5000
-                target_income = st.slider(
-                    "Target Annual Dividend Income",
-                    target_min,
-                    target_max,
-                    step=500,
-                    key="dividend_target",
-                )
-                
-                income_gap = target_income - current_income
-                if income_gap > 0:
-                    avg_yield = div_summary["blended_yield"] / 100
-                    if avg_yield > 0:
-                        capital_needed = income_gap / avg_yield
-                        st.markdown(f"""
-                        **To reach ${target_income:,.2f} annual income:**
-                        - **Capital Gap**: ${capital_needed:,.2f}
-                        - **At current blended yield** ({div_summary['blended_yield']:.2f}%)
-                        - Consider adding dividend stocks or shifting portfolio allocation
-                        """)
-
-    # ===== TAB 7: BENCHMARK COMPARISON =====
-    with tab7:
-        st.subheader("📈 Benchmark Comparison")
-        st.markdown("""
-        Compare your portfolio returns against major market indices to assess performance and alpha generation.
-        """)
-        
-        if portfolio_summary.empty or not transactions_for_detail:
-            st.info("Insufficient data for benchmark comparison.")
-        else:
-            baseline_date_for_benchmark = date.fromisoformat(str(profile.get("baseline_date") or date.today().isoformat()))
-            
-            # Benchmark comparison
-            benchmark_df = benchmark_portfolio_returns(
-                portfolio_summary,
-                transactions_for_detail,
-                baseline_date_for_benchmark,
-                indices=["SPY", "QQQ", "VXUS"],
-            )
-            
-            bench_summary = get_benchmark_summary(benchmark_df)
-            
-            # Summary metrics
-            st.subheader("Performance vs Benchmarks")
-            p1, p2, p3, p4 = st.columns(4)
-            
-            p1.metric(
-                "Your Portfolio Return",
-                f"{bench_summary['portfolio_return']:+.2f}%",
-                delta="Performance" if bench_summary['outperformance'] else "Underperformance",
-            )
-            p2.metric(
-                "Avg Benchmark Return",
-                f"{bench_summary['avg_benchmark_return']:+.2f}%",
-            )
-            p3.metric(
-                "Alpha (Over-/Underperformance)",
-                f"{bench_summary['alpha']:+.2f}%",
-                delta="Outperforming" if bench_summary['outperformance'] else "Underperforming",
-            )
-            p4.metric(
-                "Baseline Period",
-                baseline_date_for_benchmark.strftime("%b %d, %Y"),
-            )
-            
-            # Benchmark table
-            st.subheader("Detailed Comparison")
-            bench_display = benchmark_df.copy()
-            bench_display["Return %"] = bench_display["Return %"].apply(lambda x: f"{x:+.2f}%")
-            st.dataframe(bench_display, use_container_width=True, hide_index=True)
-            
-            # Performance chart
-            st.subheader("Return Comparison")
-            chart_data = benchmark_df.set_index("Ticker")["Return %"].str.rstrip('%').astype(float)
-            st.bar_chart(chart_data, height=300)
-            
-            # Analysis
-            st.subheader("Performance Analysis")
-            
-            if bench_summary['outperformance']:
-                st.success(f"""
-                ✅ **Outperforming by {bench_summary['alpha']:.2f}%**
-                
-                Your portfolio is beating the average benchmark return. This could indicate:
-                - Strong stock-picking decisions
-                - Good market timing
-                - Successful tactical allocation shifts
-                - Sector or style advantages
-                """)
-            else:
-                st.warning(f"""
-                ⚠️ **Underperforming by {abs(bench_summary['alpha']):.2f}%**
-                
-                Your portfolio is trailing the average benchmark. Consider:
-                - Review position sizing and allocation
-                - Analyze which holdings are dragging performance
-                - Consider rebalancing toward underweight sectors
-                - Evaluate if fees/costs are impacting returns
-                """)
-            
-            # Peer comparison context
-            st.subheader("Benchmark Information")
-            st.markdown("""
-            | Benchmark | Ticker | Coverage |
-            |---|---|---|
-            | S&P 500 | SPY | Large-cap US equities |
-            | Nasdaq-100 | QQQ | Growth & tech-heavy |
-            | Intl Stocks | VXUS | Developed & emerging markets |
-            
-            **Note**: Alpha calculation is a simple comparison. True alpha analysis requires risk-adjustment (Sharpe ratio, beta).
             """)
 
 if __name__ == "__main__":
