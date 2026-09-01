@@ -726,6 +726,10 @@ def main() -> None:
     if "tax_settings" not in st.session_state:
         st.session_state.tax_settings = TaxSettings()
     
+    # Initialize margin override in session state
+    if "margin_override" not in st.session_state:
+        st.session_state.margin_override = None
+    
     try:
         db, market_service, sync_service = get_services()
     except Exception as exc:
@@ -806,6 +810,40 @@ def main() -> None:
             # No income tax states highlight
             if tax_settings.state in get_no_income_tax_states():
                 st.success(f"✅ {tax_settings.state} has no state income tax!")
+
+        st.divider()
+        
+        # Margin override configuration
+        st.subheader("💳 Margin Override")
+        actual_margin = float(profile.get("margin_balance_usd") or 0.0)
+        
+        use_override = st.checkbox(
+            "Override Margin Balance",
+            value=st.session_state.margin_override is not None,
+            help="Temporarily override the margin balance for Net Portfolio Value calculation",
+            key="margin_override_toggle",
+        )
+        
+        if use_override:
+            st.session_state.margin_override = st.number_input(
+                "Margin Balance Override",
+                min_value=0.0,
+                value=st.session_state.margin_override if st.session_state.margin_override is not None else actual_margin,
+                step=100.0,
+                help="Enter custom margin balance amount",
+                key="margin_override_input",
+            )
+            
+            if st.session_state.margin_override != actual_margin:
+                diff = st.session_state.margin_override - actual_margin
+                st.metric(
+                    "Difference from Actual",
+                    f"${diff:,.2f}",
+                    delta=f"Override: ${st.session_state.margin_override:,.2f} vs Actual: ${actual_margin:,.2f}",
+                )
+        else:
+            st.session_state.margin_override = None
+            st.caption(f"Using actual margin balance: ${actual_margin:,.2f}")
 
         st.divider()
         st.subheader("Robinhood Sync")
@@ -927,7 +965,8 @@ def main() -> None:
             st.info("No active holdings found in Supabase yet.")
         else:
             total_value = float(portfolio_summary["current_value"].sum(skipna=True))
-            margin_balance = float(profile.get("margin_balance_usd") or 0.0)
+            # Use margin override if set, otherwise use actual margin balance
+            margin_balance = st.session_state.margin_override if st.session_state.margin_override is not None else float(profile.get("margin_balance_usd") or 0.0)
             net_portfolio_value = total_value - margin_balance
             total_cost = float(portfolio_summary["cost_basis"].sum(skipna=True))
             total_open_pnl = float(portfolio_summary["open_pnl"].sum(skipna=True))
@@ -940,7 +979,8 @@ def main() -> None:
             day_change_pct = (portfolio_summary_filled["last_day_change_pct"] * portfolio_summary_filled["weight_pct"] / 100.0).sum()
 
             kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-            kpi1.metric("Net Portfolio Value", f"${net_portfolio_value:,.2f}", help="Gross holdings minus Robinhood margin balance.")
+            margin_label = "💳 Net Portfolio Value*" if st.session_state.margin_override is not None else "Net Portfolio Value"
+            kpi1.metric(margin_label, f"${net_portfolio_value:,.2f}", help="Gross holdings minus margin balance." + (" *Using override value" if st.session_state.margin_override is not None else ""))
             kpi2.metric("Margin Balance", f"${margin_balance:,.2f}")
             kpi3.metric("Total Change %", "N/A" if total_change_pct is None else f"{total_change_pct:+.2f}%")
             kpi4.metric("Day Change %", f"{day_change_pct:+.2f}%")
