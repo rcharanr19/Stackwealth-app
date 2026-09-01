@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import logging
 from datetime import date, datetime
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -656,6 +657,51 @@ def compute_dashboard(db: PostgresStore, market_service: MarketDataService, refr
     return metrics, since_start, profile
 
 
+@st.cache_resource(show_spinner=False)
+def get_market_refresh_executor() -> ThreadPoolExecutor:
+    return ThreadPoolExecutor(max_workers=1, thread_name_prefix="market-refresh")
+
+
+def _refresh_market_snapshot(market_service: MarketDataService, tickers: list[str], currencies: list[str]) -> int:
+    snapshot = market_service.refresh_snapshot(tickers=tickers, currencies=currencies)
+    return sum(1 for quote in snapshot.quotes.values() if quote.price is not None)
+
+
+def start_market_refresh_job(db: PostgresStore, market_service: MarketDataService) -> bool:
+    existing = st.session_state.get("market_refresh_future")
+    if isinstance(existing, Future) and not existing.done():
+        return False
+
+    positions, _transactions = db.load_portfolio_state()
+    tickers = [position.ticker for position in positions]
+    currencies = [position.currency for position in positions]
+    if not tickers:
+        raise RuntimeError("No tickers available to refresh.")
+
+    future = get_market_refresh_executor().submit(_refresh_market_snapshot, market_service, tickers, currencies)
+    st.session_state["market_refresh_future"] = future
+    st.session_state["market_refresh_started_at"] = datetime.utcnow().isoformat()
+    return True
+
+
+def consume_market_refresh_result() -> tuple[str, str] | None:
+    future = st.session_state.get("market_refresh_future")
+    if not isinstance(future, Future):
+        return None
+    if not future.done():
+        started_at = _fmt_iso_ts(st.session_state.get("market_refresh_started_at")) or "just now"
+        return "running", f"Refreshing prices in the background; showing cached values. Started {started_at}."
+
+    st.session_state.pop("market_refresh_future", None)
+    st.session_state.pop("market_refresh_started_at", None)
+    try:
+        refreshed_count = int(future.result())
+        return "success", f"Market refresh complete. Updated cache for {refreshed_count} ticker(s)."
+    except Exception as exc:
+        LOGGER.exception("Background market refresh failed")
+        return "error", f"Market refresh failed; cached prices are still being used. {exc}"
+
+
 def sync_robinhood(
     sync_service: RobinhoodSyncService,
     *,
@@ -750,7 +796,6 @@ def _open_robinhood_dialog(sync_service: RobinhoodSyncService) -> None:
         return
 
     st.warning("This Streamlit version does not support modal dialogs; use the sidebar form below.")
-
 
 def render_kpis(metrics: pd.DataFrame, since_start: dict[str, object]) -> None:
     total_value = float(metrics["equity_usd"].sum(skipna=True)) if "equity_usd" in metrics else 0.0
@@ -1069,20 +1114,32 @@ def main() -> None:
                 st.error(str(exc))
 
         if st.button("Refresh market data", width="stretch"):
-            st.session_state["refresh_market_data"] = True
-            st.rerun()
+            try:
+                if start_market_refresh_job(db, market_service):
+                    st.info("Market refresh started. Cached portfolio values remain visible while prices update.")
+                else:
+                    st.info("Market refresh is already running. Cached portfolio values remain visible.")
+            except Exception as exc:
+                st.error(str(exc))
+
+        refresh_result = consume_market_refresh_result()
+        if refresh_result is not None:
+            refresh_status, refresh_message = refresh_result
+            if refresh_status == "running":
+                st.caption(refresh_message)
+                st.button("Check refresh status", key="check_market_refresh_status", width="stretch")
+            elif refresh_status == "success":
+                st.success(refresh_message)
+                st.caption("Newest cached prices are now used on this page load.")
+            else:
+                st.warning(refresh_message)
 
     if st.session_state.pop("refresh_after_sync", False):
         st.rerun()
 
     try:
         # Use compute_dashboard to get the FX-normalized metrics (USD-aware)
-        refresh_market_data = bool(st.session_state.pop("refresh_market_data", False))
-        if refresh_market_data:
-            with st.spinner("Refreshing market prices..."):
-                metrics, since_start, profile = compute_dashboard(db, market_service, refresh_market_data=True)
-        else:
-            metrics, since_start, profile = compute_dashboard(db, market_service, refresh_market_data=False)
+        metrics, since_start, profile = compute_dashboard(db, market_service, refresh_market_data=False)
         _positions_for_detail, transactions_for_detail = db.load_portfolio_state()
         transactions_for_detail = exclude_seed_transactions_with_real_history(transactions_for_detail)
         portfolio_summary = metrics if not metrics.empty else metrics
