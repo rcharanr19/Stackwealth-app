@@ -1227,14 +1227,14 @@ def main() -> None:
         if shares_col is not None:
             portfolio_summary = portfolio_summary[shares_col > 0].copy()
 
-        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-            "📊 Portfolio Summary",
-            "💬 AI Portfolio Chat",
-            "📉 AI Reverse DCF",
-            "📋 AI Transcript Mosaic",
-            "📜 Investment Thesis",
-            "💰 Tax Loss Harvesting",
-        ])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "📊 Portfolio Summary",
+        "💬 AI Portfolio Chat",
+        "📉 AI Reverse DCF",
+        "📋 AI Transcript Mosaic",
+        "📜 Investment Thesis",
+        "💰 Tax Loss Harvesting",
+    ])
 
     with tab1:
         st.subheader("Portfolio Summary")
@@ -1447,8 +1447,9 @@ def main() -> None:
                 else:
                     st.info("No saved AI overview found.")
 
-        with tab2:
-            st.subheader("AI Portfolio Chat")
+    with tab2:
+        st.subheader("AI Portfolio Chat")
+        with st.container():
             st.caption("Ask about holdings, allocation, performance, risks, taxes, or rebalancing.")
 
             if "portfolio_chat_messages" not in st.session_state:
@@ -1507,7 +1508,7 @@ def main() -> None:
                         except Exception as exc:
                             st.error(f"Could not generate a response: {exc}")
 
-    with tab2:
+    with tab3:
         st.subheader("AI Reverse DCF")
         if not tickers:
             st.info("No active tickers are available for analysis.")
@@ -1547,7 +1548,7 @@ def main() -> None:
                 except Exception as exc:
                     st.error(f"Reverse DCF analysis failed: {exc}")
 
-    with tab3:
+    with tab4:
         st.subheader("AI Transcript Mosaic")
         mosaic_ticker = st.text_input("Ticker", key="mosaic_ticker").upper().strip()
         cached_mosaic = None
@@ -1624,7 +1625,7 @@ def main() -> None:
             except Exception as exc:
                 st.error(f"Transcript mosaic analysis failed: {exc}")
 
-    with tab4:
+    with tab5:
         st.subheader("Investment Thesis")
 
         if portfolio_summary.empty:
@@ -1788,8 +1789,8 @@ def main() -> None:
                         else:
                             st.error(f"Investment thesis generation failed: {exc}")
 
-    # ===== TAB 5: TAX LOSS HARVESTING =====
-    with tab5:
+    # ===== TAB 6: TAX LOSS HARVESTING =====
+    with tab6:
         st.subheader("💰 Tax Loss Harvesting")
         st.markdown("""
         Identify positions with unrealized losses that can be harvested for tax benefits.
