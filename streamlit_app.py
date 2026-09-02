@@ -992,13 +992,6 @@ def main() -> None:
         st.info("First run will use portfolio.json as the baseline universe, then sync only those assets from Robinhood.")
 
     with st.sidebar:
-        st.subheader("Sync State")
-        st.write(f"Initialized: {bool(profile.get('initialized', False))}")
-        st.write(f"Last sync: {profile.get('last_sync_at') or 'never'}")
-        st.write(f"Version: {profile.get('sync_version', 1)}")
-
-        st.divider()
-        
         # Tax settings configuration
         st.subheader("⚙️ Tax Settings")
         with st.expander("Configure Tax Parameters", expanded=False):
@@ -1293,14 +1286,6 @@ def main() -> None:
                 d2.metric("Top 5 Weight", f"{top_five:.2f}%")
                 d3.metric("Margin Utilization", f"{margin_utilization:.2f}%")
                 d4.metric("Stale Quotes", str(stale_count))
-                st.json(
-                    {
-                        "initialized": bool(profile.get("initialized", False)),
-                        "baseline_date": profile.get("baseline_date"),
-                        "last_sync_at": profile.get("last_sync_at"),
-                        "margin_updated_at": profile.get("margin_updated_at"),
-                    }
-                )
 
             controls = st.container(border=True)
             with controls:
@@ -1459,15 +1444,6 @@ def main() -> None:
                     st.markdown(cached_portfolio_overview.get("report_md") or "")
                 else:
                     st.info("No saved AI overview found.")
-
-        st.subheader("Status")
-        st.json(
-            {
-                "initialized": bool(profile.get("initialized", False)),
-                "baseline_date": profile.get("baseline_date"),
-                "last_sync_at": profile.get("last_sync_at"),
-            }
-        )
 
     with tab2:
         st.subheader("AI Reverse DCF")
