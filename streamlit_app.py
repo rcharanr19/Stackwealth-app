@@ -35,6 +35,7 @@ from tabs.ai_analysis import (
     generate_comparative_investment_thesis,
     FMP_SUPPORTED_TICKERS,
     _fetch_sec_financials_for_symbol,
+        chat_with_portfolio_assistant,
 )
 from tabs.ai_analysis import FMP_SUPPORTED_TICKERS
 from tabs.portfolio_analytics import (
@@ -1226,13 +1227,14 @@ def main() -> None:
         if shares_col is not None:
             portfolio_summary = portfolio_summary[shares_col > 0].copy()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "📊 Portfolio Summary",
-        "📉 AI Reverse DCF",
-        "📋 AI Transcript Mosaic",
-        "📜 Investment Thesis",
-        "💰 Tax Loss Harvesting",
-    ])
+        tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+            "📊 Portfolio Summary",
+            "💬 AI Portfolio Chat",
+            "📉 AI Reverse DCF",
+            "📋 AI Transcript Mosaic",
+            "📜 Investment Thesis",
+            "💰 Tax Loss Harvesting",
+        ])
 
     with tab1:
         st.subheader("Portfolio Summary")
@@ -1444,6 +1446,66 @@ def main() -> None:
                     st.markdown(cached_portfolio_overview.get("report_md") or "")
                 else:
                     st.info("No saved AI overview found.")
+
+        with tab2:
+            st.subheader("AI Portfolio Chat")
+            st.caption("Ask about holdings, allocation, performance, risks, taxes, or rebalancing.")
+
+            if "portfolio_chat_messages" not in st.session_state:
+                st.session_state.portfolio_chat_messages = [
+                    {"role": "assistant", "content": "I have the current portfolio metrics loaded. What would you like to examine?"}
+                ]
+
+            chat_context = {
+                "net_portfolio_value_usd": float(metrics.get("equity_usd", pd.Series(dtype=float)).sum(skipna=True))
+                + float(profile.get("cash_usd") or 0.0)
+                - float(profile.get("margin_balance_usd") or 0.0),
+                "cash_usd": float(profile.get("cash_usd") or 0.0),
+                "margin_balance_usd": float(profile.get("margin_balance_usd") or 0.0),
+                "holdings": [
+                    {
+                        "ticker": str(row.get("ticker")),
+                        "company": row.get("company_name"),
+                        "shares": float(row.get("shares") or 0.0),
+                        "avg_cost": float(row.get("avg_cost") or 0.0),
+                        "current_price": _safe_float(row.get("current_price_usd")),
+                        "current_value_usd": _safe_float(row.get("equity_usd")),
+                        "weight_pct": _safe_float(row.get("weight_pct")),
+                        "pnl_usd": _safe_float(row.get("pnl_usd")),
+                        "xirr_pct": (
+                            _safe_float(row.get("xirr")) * 100.0
+                            if _safe_float(row.get("xirr")) is not None
+                            else None
+                        ),
+                    }
+                    for _, row in metrics.iterrows()
+                ],
+            }
+
+            if st.button("Clear chat", key="clear_portfolio_chat"):
+                st.session_state.portfolio_chat_messages = []
+                st.rerun()
+
+            for message in st.session_state.portfolio_chat_messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+
+            user_input = st.chat_input("Ask a question about your portfolio...", key="portfolio_chat_input")
+            if user_input:
+                st.session_state.portfolio_chat_messages.append({"role": "user", "content": user_input})
+                with st.chat_message("user"):
+                    st.markdown(user_input)
+                with st.chat_message("assistant"):
+                    with st.spinner("Analyzing your portfolio..."):
+                        try:
+                            reply = chat_with_portfolio_assistant(
+                                st.session_state.portfolio_chat_messages,
+                                chat_context,
+                            )
+                            st.markdown(reply)
+                            st.session_state.portfolio_chat_messages.append({"role": "assistant", "content": reply})
+                        except Exception as exc:
+                            st.error(f"Could not generate a response: {exc}")
 
     with tab2:
         st.subheader("AI Reverse DCF")

@@ -679,6 +679,46 @@ For deep historical financial statement analysis (5+ year forensic trends), dire
     return result
 
 
+def chat_with_portfolio_assistant(
+    messages: list[dict[str, str]],
+    portfolio_context: dict[str, Any],
+) -> str:
+    """Chat with the Gemini LLM assistant grounded in real-time portfolio data.
+
+    `messages` is a list of conversation turns with keys "role" ('user' or 'assistant') and "content".
+    `portfolio_context` contains live portfolio metrics, holdings, cash, margin balance, etc.
+    """
+    client = _gemini_client()
+    model_name = get_model_name()
+
+    context_str = json.dumps(portfolio_context, indent=2, default=str)
+
+    system_instruction = f"""You are the AI Investment Copilot and Portfolio Architect for StackWealth.
+You have direct access to the user's real-time portfolio data, allocations, cost basis, performance metrics (P&L and XIRR), cash, and margin balance.
+
+### USER'S CURRENT PORTFOLIO CONTEXT:
+{context_str}
+
+### INSTRUCTIONS:
+- Ground your answers in the user's real portfolio holdings and numbers provided above.
+- When referencing holdings, cite exact ticker symbols, share counts, cost bases, current values, allocation percentages, and P&L figures.
+- Provide objective, institutional-grade insights on portfolio risk, diversification, concentration, performance drivers, rebalancing, tax implications, and individual assets.
+- If the user asks general market/macro/strategy questions, connect them back to how their specific holdings or asset allocation might be affected.
+- Keep answers structured, concise, and clear using Markdown (bolding, lists, and tables where relevant).
+- Avoid repeated generic disclaimers on every turn; provide direct, insightful, and actionable answers.
+""".strip()
+
+    formatted_convo = []
+    for msg in messages:
+        role_label = "User" if msg.get("role") == "user" else "Assistant"
+        formatted_convo.append(f"{role_label}: {msg.get('content', '')}")
+
+    full_prompt = f"{system_instruction}\n\n### CONVERSATION HISTORY:\n" + "\n\n".join(formatted_convo) + "\n\nAssistant:"
+
+    response = _gemini_generate_with_retries(client, full_prompt, models=[model_name])
+    return _response_text(response)
+
+
 @st.cache_data(ttl=86400, show_spinner=False)
 def generate_comparative_investment_thesis(
     ticker: str,

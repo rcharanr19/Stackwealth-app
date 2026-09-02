@@ -126,7 +126,7 @@ class MarketDataService:
             raw_currency = fast_info.get("currency")
 
         # Fallback to (possibly heavier) info only if fast_info didn't provide metadata
-        if not company_name or not raw_currency:
+        if company_name is None or raw_currency is None:
             try:
                 info = self._quiet_call(lambda: getattr(tk, "info", None)) or {}
                 if isinstance(info, dict):
