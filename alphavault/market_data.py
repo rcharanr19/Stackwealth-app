@@ -256,6 +256,25 @@ class MarketDataService:
             # Convert native currency amount to USD by dividing by USD->CCY.
             fx[ccy] = 1.0 / usd_to_ccy
         return fx
+        def _fetch_fx_live_to_usd(self, currencies: Iterable[str]) -> dict[str, float]:
+            fx: dict[str, float] = {"USD": 1.0}
+            for ccy in {c.upper().strip() for c in currencies if c and c.strip()}:
+                if ccy == "USD":
+                    continue
+                pair = f"USD{ccy}=X"
+                try:
+                    tk = yf.Ticker(pair)
+                    history = self._quiet_call(tk.history, period="1d")
+                    if history.empty:
+                        raise RuntimeError(f"No FX data for pair {pair}")
+                    usd_to_ccy = float(history["Close"].dropna().iloc[-1])
+                    if usd_to_ccy <= 0:
+                        raise RuntimeError(f"Invalid FX rate for {pair}: {usd_to_ccy}")
+                    # Convert native currency amount to USD by dividing by USD->CCY.
+                    fx[ccy] = 1.0 / usd_to_ccy
+                except Exception as exc:
+                    LOGGER.warning("FX fetch failed for %s: %s", ccy, exc)
+            return fx
 
     def fetch_cutoff_prices(self, tickers: Iterable[str], cutoffs: Iterable[date]) -> dict[str, dict[date, float | None]]:
         cutoff_list = sorted(set(cutoffs))
@@ -459,7 +478,17 @@ class MarketDataService:
 
         try:
             LOGGER.debug("Fetching live FX rates for currencies: %s", ", ".join(sorted(set(currency_list))) or "USD")
-            fx_to_usd = self._fetch_fx_live_to_usd(currency_list)
+            live_fx = self._fetch_fx_live_to_usd(currency_list)
+            fx_to_usd = {
+                str(k).upper(): float(v)
+                for k, v in cached_fx.items()
+                if v is not None
+            }
+            fx_to_usd.update(live_fx)
+            missing_fx = set(currency_list) - set(live_fx) - set(fx_to_usd)
+            if missing_fx:
+                online = False
+                LOGGER.warning("No live or cached FX rate available for: %s", ", ".join(sorted(missing_fx)))
         except Exception:
             online = False
             LOGGER.exception("FX fetch failed; falling back to cached FX data")
